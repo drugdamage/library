@@ -1,0 +1,11 @@
+# база создаётся сама при первом запуске
+library.db
+
+# служебные файлы python
+__pycache__/
+*.pyc
+.venv/
+
+# мусор macos и word
+.DS_Store
+~$*.docx
