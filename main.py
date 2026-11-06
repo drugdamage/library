@@ -1,16 +1,14 @@
-# часть 2: точка входа в программу, запускать так: python main.py
-# готовит базу, задаёт общее оформление, показывает окно входа и потом главное окно
-# кнопка «Выйти» в главном окне снова открывает окно входа для другого сотрудника
+import sys
 
-import sys  # нужен для аргументов запуска и кода выхода
+from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import QApplication, QDialog
 
-from PyQt6.QtGui import QFont  # шрифт для всей программы
-from PyQt6.QtWidgets import QApplication, QDialog  # само приложение и диалог
+from database import init_db
+from ui.login import LoginDialog
+from ui.main_window import MainWindow
 
-from database import init_db  # подготовка базы
-from ui.login import LoginDialog  # окно входа
-from ui.main_window import MainWindow  # главное окно
-
+# оформление для всех окон сразу, пишется почти как css
+# #menu, #card и т.д. это имена которые задаются через setObjectName
 STYLE = """
     QWidget { color: #222; }
     QMainWindow, QDialog { background: #f6f7f9; }
@@ -28,30 +26,31 @@ STYLE = """
     #hint { color: #666; }
     #error { color: #d9534f; }
     QStatusBar QLabel { padding-left: 6px; }
-"""  # общее оформление для всех окон, похоже на css
+"""
 
 
-def main():  # главная функция программы
-    init_db()  # создаём базу и тестовые данные если их ещё нет
-    app = QApplication(sys.argv)  # без этого объекта окна pyqt не работают
-    app.setFont(QFont(app.font().family(), 12))  # читаемый размер шрифта везде
-    app.setStyleSheet(STYLE)  # единое оформление
-    app.setQuitOnLastWindowClosed(False)  # когда выходить решаем сами, иначе при смене пользователя всё закроется
+def main():
+    init_db()  # создаст базу если её ещё нет
+    app = QApplication(sys.argv)
+    app.setFont(QFont(app.font().family(), 12))
+    app.setStyleSheet(STYLE)
+    # иначе при нажатии «Выйти» закроется главное окно и вся программа вместе с ним
+    app.setQuitOnLastWindowClosed(False)
 
-    def login():  # показывает окно входа и открывает главное окно
-        dialog = LoginDialog()  # создаём окно входа
-        if dialog.exec() != QDialog.DialogCode.Accepted:  # нажали esc или закрыли крестиком
-            app.quit()  # выходим из программы
-            return False  # сообщаем что вход не состоялся
-        window = MainWindow(dialog.user)  # главное окно для вошедшего сотрудника
-        window.logout.connect(login)  # «Выйти» снова вызывает эту же функцию
-        window.show()  # показываем окно
-        app.main_window = window  # держим ссылку, иначе python удалит окно
-        return True  # вход удался
+    def login():
+        dialog = LoginDialog()
+        if dialog.exec() != QDialog.DialogCode.Accepted:  # закрыли окно входа или нажали esc
+            app.quit()
+            return False
+        window = MainWindow(dialog.user)
+        window.logout.connect(login)  # после «Выйти» снова показываем вход
+        window.show()
+        app.main_window = window  # если не сохранить ссылку, окно сразу пропадёт
+        return True
 
-    if login():  # первый вход при запуске
-        sys.exit(app.exec())  # запускаем обработку событий до закрытия программы
+    if login():
+        sys.exit(app.exec())
 
 
-if __name__ == "__main__":  # только при запуске этого файла напрямую
-    main()  # запускаем программу
+if __name__ == "__main__":
+    main()

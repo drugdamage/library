@@ -1,76 +1,74 @@
-# часть 2: окно входа в программу
-# сотрудник вводит логин и пароль, проверка идёт через check_login из database.py
-# если вход удался, в self.user лежит сотрудник: id, фио и роль
+from PyQt6.QtWidgets import QDialog, QFormLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout
 
-from PyQt6.QtWidgets import QDialog, QFormLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout  # нужные виджеты
+from database import check_login
 
-from database import check_login  # проверка логина и пароля в базе
-
-ERROR_STYLE = "border: 2px solid #d9534f;"  # красная рамка для пустого поля
+ERROR_STYLE = "border: 2px solid #d9534f;"  # красная рамка у неправильного поля
 
 
-class LoginDialog(QDialog):  # окно входа, наследуем от обычного диалога
-    def __init__(self):  # создаём окно
-        super().__init__()  # сначала создаём сам диалог
-        self.user = None  # тут будет сотрудник после удачного входа
-        self.setWindowTitle("Вход — Библиотека")  # заголовок окна
-        self.setFixedWidth(360)  # ширина постоянная, растягивать незачем
+class LoginDialog(QDialog):
+    def __init__(self):
+        super().__init__()
+        self.user = None  # сюда попадёт сотрудник если вход удался
+        self.setWindowTitle("Вход — Библиотека")
+        self.setFixedWidth(360)
 
-        title = QLabel("Библиотека")  # крупная надпись сверху
-        title.setObjectName("loginTitle")  # имя нужно чтобы задать стиль в main.py
-        hint = QLabel("Введите логин и пароль сотрудника")  # подсказка что делать
-        hint.setObjectName("hint")  # серый мелкий текст
+        title = QLabel("Библиотека")
+        title.setObjectName("loginTitle")
+        hint = QLabel("Введите логин и пароль сотрудника")
+        hint.setObjectName("hint")
 
-        self.login = QLineEdit()  # поле логина
-        self.login.setPlaceholderText("например, lib")  # серая подсказка внутри поля
-        self.password = QLineEdit()  # поле пароля
-        self.password.setEchoMode(QLineEdit.EchoMode.Password)  # вместо букв точки
-        self.error = QLabel()  # сюда пишем ошибку
-        self.error.setObjectName("error")  # красный текст
-        self.error.hide()  # пока ошибки нет, прячем
+        self.login = QLineEdit()
+        self.login.setPlaceholderText("например, lib")
+        self.password = QLineEdit()
+        self.password.setEchoMode(QLineEdit.EchoMode.Password)  # пароль точками
+        self.error = QLabel()
+        self.error.setObjectName("error")
+        self.error.hide()
 
-        self.button = QPushButton("Войти")  # основная кнопка
-        self.button.setDefault(True)  # enter в любом поле нажимает её
-        self.button.clicked.connect(self.try_login)  # по нажатию проверяем вход
+        self.button = QPushButton("Войти")
+        self.button.setDefault(True)  # чтобы срабатывала по enter
+        self.button.clicked.connect(self.try_login)
 
-        form = QFormLayout()  # подписи слева, поля справа
-        form.addRow("Логин:", self.login)  # строка логина
-        form.addRow("Пароль:", self.password)  # строка пароля
+        form = QFormLayout()
+        form.addRow("Логин:", self.login)
+        form.addRow("Пароль:", self.password)
 
-        layout = QVBoxLayout(self)  # всё окно сверху вниз
-        layout.setContentsMargins(24, 20, 24, 20)  # отступы от краёв окна
-        layout.setSpacing(10)  # расстояние между элементами
-        layout.addWidget(title)  # заголовок
-        layout.addWidget(hint)  # подсказка
-        layout.addLayout(form)  # поля
-        layout.addWidget(self.error)  # ошибка
-        layout.addWidget(self.button)  # кнопка внизу
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(10)
+        layout.addWidget(title)
+        layout.addWidget(hint)
+        layout.addLayout(form)
+        layout.addWidget(self.error)
+        layout.addWidget(self.button)
 
-        for field in (self.login, self.password):  # для обоих полей
-            field.textChanged.connect(self.clear_error)  # начали печатать и ошибка пропадает
-        self.login.setFocus()  # курсор сразу в поле логина
+        # когда человек начинает исправлять, ошибку убираем
+        for field in (self.login, self.password):
+            field.textChanged.connect(self.clear_error)
+        self.login.setFocus()
 
-    def clear_error(self):  # убирает красные рамки и текст ошибки
-        self.login.setStyleSheet("")  # обычная рамка у логина
-        self.password.setStyleSheet("")  # и у пароля
-        self.error.hide()  # прячем надпись
+    def clear_error(self):
+        self.login.setStyleSheet("")
+        self.password.setStyleSheet("")
+        self.error.hide()
 
-    def show_error(self, text, *fields):  # показывает ошибку и подсвечивает поля
-        self.error.setText(text)  # текст ошибки
-        self.error.show()  # показываем надпись
-        for field in fields:  # каждое переданное поле
-            field.setStyleSheet(ERROR_STYLE)  # обводим красным
-        fields[0].setFocus()  # курсор в первое проблемное поле
+    def show_error(self, text, *fields):
+        # fields это поля которые надо обвести красным
+        self.error.setText(text)
+        self.error.show()
+        for field in fields:
+            field.setStyleSheet(ERROR_STYLE)
+        fields[0].setFocus()
 
-    def try_login(self):  # проверка при нажатии «Войти»
-        empty = [f for f in (self.login, self.password) if not f.text().strip()]  # какие поля пустые
-        if empty:  # что-то не заполнено
-            self.show_error("Заполните логин и пароль.", *empty)  # подсвечиваем пустые
-            return  # в базу не идём
-        user = check_login(self.login.text(), self.password.text())  # спрашиваем базу
-        if user is None:  # не нашли такого сотрудника
-            self.password.clear()  # пароль стираем, чтобы ввести заново
-            self.show_error("Неверный логин или пароль.", self.password)  # понятное сообщение без подробностей
-            return  # окно не закрываем
-        self.user = user  # запоминаем кто вошёл
-        self.accept()  # закрываем окно с успехом
+    def try_login(self):
+        empty = [f for f in (self.login, self.password) if not f.text().strip()]
+        if empty:
+            self.show_error("Заполните логин и пароль.", *empty)
+            return
+        user = check_login(self.login.text(), self.password.text())
+        if user is None:
+            self.password.clear()
+            self.show_error("Неверный логин или пароль.", self.password)
+            return
+        self.user = user
+        self.accept()  # закрывает окно, exec() в main.py вернёт Accepted

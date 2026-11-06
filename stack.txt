@@ -1,0 +1,226 @@
+что использую в проекте
+
+python 3.14 (подойдёт любой от 3.10)
+pyqt6 6.11 - окна
+sqlite 3 - база данных, встроена в python через модуль sqlite3
+больше ничего не ставил, всё остальное есть в python из коробки
+
+
+установка и запуск
+
+python3 -m venv .venv               создать виртуальное окружение (один раз)
+source .venv/bin/activate           включить его (каждый раз в новом терминале)
+pip install -r requirements.txt     поставить pyqt6
+python main.py                      запустить программу
+python database.py                  проверить базу без окон
+deactivate                          выключить окружение
+
+если удалить library.db, при следующем запуске база создастся заново с тестовыми данными
+
+
+sqlite3
+https://docs.python.org/3/library/sqlite3.html
+https://www.sqlite.org/lang.html                  весь sql в sqlite
+https://www.sqlite.org/lang_datefunc.html         date('now'), julianday и т.п.
+
+conn = sqlite3.connect("library.db")      открыть базу, если файла нет он создастся
+conn.row_factory = sqlite3.Row            чтобы писать row["title"] вместо row[1]
+conn.execute("PRAGMA foreign_keys = ON")  включить проверку внешних ключей, по умолчанию выключена
+
+with connect() as conn:                   в конце блока изменения сохранятся сами (commit),
+    ...                                   а если была ошибка, всё откатится (rollback)
+
+параметры в запрос передаю только через ?, а не через f-строку, так нет sql инъекций:
+conn.execute("SELECT * FROM readers WHERE id = ?", (5,))
+запятая в (5,) обязательна, иначе это не кортеж
+
+conn.execute(...).fetchone()        одна строка или None
+conn.execute(...).fetchall()        список всех строк
+cur.lastrowid                       id только что добавленной строки
+conn.executemany(sql, список)       один запрос для многих строк
+conn.executescript(текст)           выполнить несколько запросов подряд, так создаю таблицы
+
+conn.create_function("py_lower", 1, py_lower)
+так можно дать sqlite свою функцию на python. понадобилось потому что LOWER() и LIKE в sqlite
+не понимают регистр русских букв, а поиск должен работать без учёта регистра
+
+что из sql использую:
+CREATE TABLE IF NOT EXISTS        создать таблицу если её нет
+PRIMARY KEY AUTOINCREMENT         номер ставится сам
+REFERENCES books(id)              внешний ключ
+ON DELETE CASCADE                 удалили книгу - удалились и её связи
+CHECK (role IN (...))             разрешены только эти значения
+DEFAULT (date('now', 'localtime'))   значение по умолчанию - сегодняшняя дата
+JOIN                              соединить таблицы
+group_concat(...)                 склеить несколько строк в одну, так получаю всех авторов книги
+LIKE '%текст%'                    поиск подстроки, % = любые символы
+coalesce(x, '')                   если x пустой, берём ''
+julianday(a) - julianday(b)       разница между датами в днях
+
+
+hashlib
+https://docs.python.org/3/library/hashlib.html
+
+hashlib.sha256("1234".encode("utf-8")).hexdigest()
+пароли в базе лежат так, а при входе я хеширую введённый пароль и сравниваю хеши
+
+
+datetime
+https://docs.python.org/3/library/datetime.html
+
+date.today() + timedelta(days=14)     дата через 14 дней
+.isoformat()                          в строку вида 2026-10-22, так даты хранятся в базе
+
+
+pathlib
+https://docs.python.org/3/library/pathlib.html
+
+Path(__file__).with_name("library.db")   путь к файлу в той же папке что и скрипт,
+                                         чтобы база находилась откуда бы ни запускали
+
+
+pyqt6
+https://www.riverbankcomputing.com/static/Docs/PyQt6/     документация pyqt6
+https://doc.qt.io/qt-6/classes.html                      описание всех классов qt (там c++,
+                                                         но методы называются так же)
+https://doc.qt.io/qt-6/stylesheet-reference.html         что можно писать в setStyleSheet
+
+как устроена программа на pyqt:
+app = QApplication(sys.argv)     без него окна не работают, создаётся один раз
+window.show()                    показать окно
+sys.exit(app.exec())             запустить программу, дальше она ждёт действий пользователя
+
+классы которые использую:
+QMainWindow       главное окно, у него есть строка состояния statusBar()
+QDialog           окно входа. exec() показывает его и ждёт пока закроют,
+                  accept() закрывает с результатом Accepted, esc закрывает само
+QWidget           пустой виджет, из него делаю страницы
+QLabel            надпись
+QLineEdit         поле ввода. setEchoMode(Password) - точки вместо букв,
+                  setPlaceholderText - серая подсказка внутри
+QPushButton       кнопка. setDefault(True) - нажимается по enter
+QListWidget       список, из него меню слева
+QStackedWidget    стопка страниц, видна одна, setCurrentIndex(n) переключает
+QFrame            рамка, из неё карточки на главном экране
+
+раскладка (layout), чтобы не задавать координаты руками:
+QVBoxLayout       элементы сверху вниз
+QHBoxLayout       слева направо
+QGridLayout       сеткой, addWidget(виджет, строка, столбец)
+QFormLayout       подпись слева, поле справа: addRow("Логин:", поле)
+addStretch()      пустое место которое растягивается
+setContentsMargins(...), setSpacing(...)   отступы
+
+сигналы и слоты - так кнопки и поля вызывают функции:
+button.clicked.connect(self.try_login)           нажали кнопку
+field.textChanged.connect(self.clear_error)      поменялся текст
+menu.currentRowChanged.connect(self.open_section)   выбрали пункт в списке
+
+свой сигнал:
+class MainWindow(QMainWindow):
+    logout = pyqtSignal()
+...
+self.logout.emit()                  отправить
+window.logout.connect(login)        поймать в main.py
+
+оформление:
+app.setStyleSheet(STYLE)            один стиль на всю программу, пишется как css
+label.setObjectName("hint")         имя виджета, в стиле к нему обращаюсь #hint
+field.setStyleSheet("border: 2px solid #d9534f;")   стиль одному виджету, так подсвечиваю ошибку
+
+мелочи:
+app.setQuitOnLastWindowClosed(False)   чтобы программа не закрывалась при смене пользователя
+closeEvent(self, event)                 вызывается когда окно закрывают, переопределяю его
+setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)   окно удаляется из памяти после закрытия
+
+
+функции в database.py
+
+init_db()                                создать таблицы и тестовые данные
+connect()                                подключение к базе
+check_login(login, password)             сотрудник (id, full_name, role) или None
+get_genres()                             жанры
+get_readers()                            читатели
+add_reader(full_name, phone, address, birth_date)   вернёт номер билета
+search_books(text, only_available)       поиск экземпляров по названию, автору, жанру
+issue_book(copy_id, reader_id, staff_id, days=14)   выдать, вернёт срок возврата
+return_book(copy_id, staff_id)           принять обратно
+get_issued()                             что сейчас выдано
+get_debtors()                            должники и сколько дней просрочки
+get_history(limit=100)                   журнал операций
+get_stats()                              цифры для главного экрана
+
+ошибки при выдаче и возврате (нет экземпляра, уже выдан и т.п.) функции кидают ValueError
+с текстом, который можно сразу показать пользователю
+
+
+git
+
+git status                  что изменилось
+git add .                   добавить всё
+git commit -m "сообщение"   сохранить
+git push                    отправить на github
+library.db и .venv в git не попадают, они в .gitignore
+
+
+обновление 06.11.2026 — сравнение Access и Python
+
+Главная цель теперь сравнить способы реализации одной задачи. Access — целая среда,
+поэтому сравниваем его с Python + PyQt6 + SQLite. Живой поиск и сводка в Access уже
+есть по документу «Доработки 2», это не новые преимущества Python.
+ТЗ переписано в ТЗ.md, сравнение и сценарий показа находятся в comparison.md.
+
+что добавлено:
+ui/workflows.py — общая таблица Table и формы CatalogPage (поиск/выдача),
+ReturnPage, ReadersPage, ReportsPage, AdminPage. Страницы создаются при первом
+открытии, при повторном открытии заново читают данные из БД.
+ui/main_window.py — четыре кнопки по образцу Access, кнопка возврата в меню,
+обновление сводки. Старую боковую панель убрали ради сопоставимости.
+reports.py — описание четырёх отчётов (функция + поля) и общий CSV-экспорт.
+CSV пишется через csv.writer, кодировка utf-8-sig, разделитель ;.
+Экспортируется текущий порядок строк после сортировки. Текст с =,+,-,@
+экранируется апострофом, чтобы табличный редактор не выполнял формулы.
+
+database.py:
+LibraryConnection закрывает соединение после commit/rollback в with.
+Важно: обычный sqlite3.Connection в with завершает транзакцию, но не закрывается.
+BEGIN IMMEDIATE в выдаче/возврате получает блокировку записи до проверки состояния.
+Проверка, изменение экземпляра и запись журнала — одна транзакция.
+add_reader проверяет обязательные поля и дату рождения независимо от интерфейса.
+get_authors() — список авторов для выбора.
+add_book(title, genre_id, author_ids, year, copies, staff_id) — книга, связи с
+авторами и экземпляры одной транзакцией; роль администратора проверяется в БД-функции.
+backup_database(path, staff_id) — sqlite3.Connection.backup, не копирование
+открытого файла через shutil; исходную и существующую целевую БД не перезаписывает.
+Все изменения схемы отсутствуют: старая library.db подходит без пересоздания.
+
+новые стандартные модули: csv (экспорт), tempfile и unittest (изолированные тесты).
+Зависимости остались прежними, только PyQt6. Новые библиотеки не устанавливались.
+Новые Qt-классы: QTableWidget/QTableWidgetItem, QHeaderView, QComboBox,
+QCheckBox, QSpinBox, QDateEdit, QFileDialog, QMessageBox.
+UserRole хранит id экземпляра в каждой ячейке: сортировка не ломает выбор записи.
+DisplayRole хранит числовые значения как числа: 10 сортируется после 2.
+
+проверка:
+python -m unittest discover -s tests -v
+QT_QPA_PLATFORM=offscreen python -m unittest discover -s tests -p 'test_ui.py' -v
+Тесты перенаправляют DB_PATH на временный файл. Рабочая library.db не меняется.
+Триггер RAISE(ABORT) искусственно ломает журнал, чтобы проверить откат операции.
+Это пример того, как Python позволяет проверять логику независимо от окон.
+В Access транзакции тоже есть (DAO), но их наличие в сданной базе надо проверить.
+
+пока не сделано:
+управление жанрами/авторами/сотрудниками, изменение и удаление записей, печать;
+точная визуальная сверка с Access и замеры времени в обеих версиях.
+В репозитории нет .accdb, поэтому сравнение Access основано на документах,
+а не на запуске его готовой базы. Новые функции не доказывают, что Access их не умеет.
+Тестовые SHA-256-пароли без соли и роли приложения не защищают файл от прямого доступа.
+
+результат проверки 06.11.2026:
+13 тестов пройдены: 10 для БД/отчётов и 3 для Qt-форм (offscreen).
+Проверены точные сроки 7 и 21 день, многoавторная книга, отказ библиотекарю,
+откат при неверном авторе, целостность резервной копии и запрет перезаписи.
+На временной копии существующей library.db открыты все шесть рабочих форм;
+init_db не изменил число книг, экземпляров и выдач. Рабочий файл не изменялся.
+Просмотрены рендеры главной формы и выдачи. Это не заменяет сверку с Access.
+git diff --check — без ошибок.
