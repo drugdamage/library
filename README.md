@@ -1,38 +1,32 @@
-# Библиотека: Access и Python
+# Library
 
-Учебное сравнение одной системы учёта библиотеки в Microsoft Access и Python + PyQt6 + SQLite. Цель — выяснить, где проще визуальные средства Access, а где полезны программные правила и автоматическая проверка Python. Главное меню повторяет четыре основных раздела Access; точное оформление ещё предстоит сверить с готовой Access-базой.
+A library management app built with Python, PyQt6, and SQLite, for a coursework comparison with Microsoft Access. Includes book search, loans and returns, reader registration, CSV reports, and database backups.
 
-## Запуск
+## Run
 
-```bash
+Requires Python 3.10+.
+
+```sh
+git clone https://github.com/drugdamage/library.git
+cd library
 python3 -m venv .venv
-source .venv/bin/activate
+```
+
+Activate with `source .venv/bin/activate` on macOS/Linux. In Windows PowerShell, create the environment with `python` and activate with `.\.venv\Scripts\Activate.ps1`. Then:
+
+```sh
 pip install -r requirements.txt
 python main.py
 ```
 
-В Windows активация: `.venv\Scripts\activate`. Требуется Python 3.10+ и совместимая с ним версия PyQt6; проверено на Python 3.14 / PyQt6 6.11.
+Demo logins: `admin / 1234`, `lib / 1111`. The app creates `library.db` on first launch and keeps existing data on later launches.
 
-Тестовые входы: `admin / 1234`, `lib / 1111`. База `library.db` создаётся при первом запуске. Существующая база сохраняется; удалять её для обновления не нужно.
+## Tests
 
-## Что работает
-
-- Вход, роли и обновляемая сводка; четыре кнопки «Администрирование», «Выдача», «Отчёты», «Отдача».
-- Поиск по названию, автору и жанру, фильтр наличия и жанра, сортировка таблиц.
-- Выдача с выбором срока, возврат, запрет повторных операций, транзакционный журнал.
-- Поиск и регистрация читателей с проверкой обязательных данных и даты рождения.
-- Четыре отчёта и CSV: выданные, доступные, должники, полный журнал.
-- Администратор: добавление книги с несколькими авторами и экземплярами, резервная копия SQLite.
-
-Редактирование/удаление записей, управление справочниками и печать отчётов остаются следующим этапом. Роли и SHA-256 без соли имеют учебное назначение; прямой доступ к файлу БД не ограничен.
-
-## Проверка
-
-```bash
-python -m unittest discover -s tests -v
-QT_QPA_PLATFORM=offscreen python -m unittest discover -s tests -p 'test_ui.py' -v
+```sh
+QT_QPA_PLATFORM=offscreen python -m unittest discover -s tests -v
 ```
 
-Все тесты работают на временных базах. Обычный запуск программы и демонстрация изменяют рабочую БД.
+Tests use temporary databases. This is a learning project; its login system does not protect the database file from direct access. Record editing/deletion, reference data management, and report printing are unfinished; the Access comparison is ongoing.
 
-[ТЗ](ТЗ.md) — цель, требования и приёмка. [comparison.md](comparison.md) — сравнение, источники, сценарий показа и незавершённые проверки Access. [stack.txt](stack.txt) — устройство проекта и команды. В `docs/` сохранены исходная методичка и доработки Access.
+Project docs (Russian): [requirements](%D0%A2%D0%97.md), [Access comparison](comparison.md), [stack and commands](stack.txt), [source materials](docs/).

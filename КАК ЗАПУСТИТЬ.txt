@@ -1,6 +1,18 @@
-cd "/Users/webnoise/dd/University/4 курс/Базы данных и управление ими"
-source .venv/bin/activate
+Open a terminal in the project folder. Requires Python 3.10+.
+
+First run:
+python -m venv .venv
+Use python3 if python is unavailable.
+
+Activate the environment:
+macOS/Linux: source .venv/bin/activate
+Windows PowerShell: .\.venv\Scripts\Activate.ps1
+
+Install and start:
+pip install -r requirements.txt
 python main.py
 
-admin 1234
-lib 1111
+For later runs, activate the environment and run python main.py.
+
+Demo logins: admin / 1234, lib / 1111.
+library.db is created automatically. Keep it to preserve your data.
