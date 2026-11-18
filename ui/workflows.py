@@ -5,9 +5,9 @@ import sqlite3
 from PyQt6.QtCore import QDate, Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QFileDialog,
+    QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QDialog, QFileDialog,
     QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QPushButton, QSpinBox, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 import database as db
 from reports import REPORTS, export_csv
@@ -24,14 +24,14 @@ class Table(QTableWidget):
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.horizontalHeader().setStretchLastSection(True)
 
-    def populate(self, columns, rows, id_key=None):
+    def populate(self, columns, rows, id_key=None, mark_overdue=True):
         self.setSortingEnabled(False)
         self.clear()
         self.setColumnCount(len(columns))
         self.setHorizontalHeaderLabels([caption for key, caption in columns])
         self.setRowCount(len(rows))
         for i, row in enumerate(rows):
-            overdue = 'due_date' in row.keys() and row['due_date'] and row['due_date'] < date.today().isoformat()
+            overdue = mark_overdue and 'due_date' in row.keys() and row['due_date'] and row['due_date'] < date.today().isoformat()
             for j, (key, caption) in enumerate(columns):
                 value = row[key]
                 item = QTableWidgetItem()
@@ -184,6 +184,50 @@ class ReturnPage(Page):
         self.run_action(action)
 
 
+class ReaderCardDialog(QDialog):
+    def __init__(self, card, parent=None):
+        super().__init__(parent)
+        reader, loans, history = card['reader'], card['loans'], card['history']
+        self.setWindowTitle(f"Карточка читателя — билет №{reader['id']}")
+        self.resize(1000, 560)
+        layout = QVBoxLayout(self)
+        heading = QLabel(f"Читательский билет №{reader['id']}")
+        heading.setObjectName('pageTitle')
+        layout.addWidget(heading)
+        details = QFormLayout()
+        for key, caption in [('full_name', 'ФИО:'), ('phone', 'Телефон:'),
+                             ('address', 'Адрес:'), ('birth_date', 'Дата рождения:'),
+                             ('reg_date', 'Дата регистрации:')]:
+            value = QLabel(str(reader[key]))
+            value.setTextFormat(Qt.TextFormat.PlainText)
+            value.setWordWrap(True)
+            value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            details.addRow(caption, value)
+        layout.addLayout(details)
+        overdue = sum(loan['days_late'] > 0 for loan in loans)
+        self.summary = QLabel(f'Книг на руках: {len(loans)}. Просрочено: {overdue}.')
+        layout.addWidget(self.summary)
+        tabs = QTabWidget()
+        self.loans = Table()
+        self.loans.populate([('copy_id', 'Инв. №'), ('title', 'Название'),
+                             ('due_date', 'Срок возврата'), ('days_late', 'Просрочка, дней')], loans)
+        self.history = Table()
+        # Старый срок в журнале не означает, что книга всё ещё просрочена.
+        self.history.populate([('op_date', 'Дата операции'), ('op_type', 'Операция'),
+                               ('copy_id', 'Инв. №'), ('title', 'Название'),
+                               ('staff', 'Сотрудник'), ('due_date', 'Срок при выдаче')],
+                              history, mark_overdue=False)
+        self.history.horizontalHeader().setStretchLastSection(False)
+        tabs.addTab(self.loans, f'Книги на руках ({len(loans)})')
+        tabs.addTab(self.history, f'История операций ({len(history)})')
+        layout.addWidget(tabs, 1)
+        hint = QLabel('Просроченные книги выделены красным.' if loans else 'Сейчас у читателя нет книг на руках.')
+        layout.addWidget(hint)
+        close = QPushButton('Закрыть')
+        close.clicked.connect(self.accept)
+        layout.addWidget(close)
+
+
 class ReadersPage(Page):
     def __init__(self):
         super().__init__('Читатели')
@@ -192,6 +236,12 @@ class ReadersPage(Page):
         self.layout.addWidget(self.search)
         self.table = Table()
         self.layout.addWidget(self.table)
+        self.card_button = QPushButton('Карточка выбранного читателя')
+        self.card_button.setEnabled(False)
+        self.card_button.clicked.connect(self.open_card)
+        self.layout.addWidget(self.card_button)
+        self.table.itemSelectionChanged.connect(self.update_card_button)
+        self.table.cellDoubleClicked.connect(self.open_card)
         self.fields = [QLineEdit() for _ in range(3)]
         self.birth = QDateEdit(QDate(2000, 1, 1))
         self.birth.setCalendarPopup(True)
@@ -211,7 +261,23 @@ class ReadersPage(Page):
     def refresh(self):
         text = self.search.text().strip().lower()
         rows = [r for r in db.get_readers() if text in r['full_name'].lower() or text in str(r['id'])]
-        self.table.populate([('id', 'Билет'), ('full_name', 'ФИО'), ('phone', 'Телефон'), ('address', 'Адрес'), ('birth_date', 'Дата рождения')], rows)
+        self.table.populate([('id', 'Билет'), ('full_name', 'ФИО'), ('phone', 'Телефон'), ('address', 'Адрес'), ('birth_date', 'Дата рождения')], rows, 'id')
+        self.update_card_button()
+
+    def update_card_button(self):
+        self.card_button.setEnabled(self.table.selected_id() is not None)
+
+    def open_card(self, *_):
+        reader_id = self.table.selected_id()
+        if reader_id is None:
+            self.message.setText('Выберите читателя в таблице.')
+            return
+        try:
+            card = db.get_reader_card(reader_id)
+        except (ValueError, sqlite3.Error) as error:
+            self.message.setText(str(error) if isinstance(error, ValueError) else 'Не удалось открыть карточку читателя.')
+            return
+        ReaderCardDialog(card, self).exec()
 
     def register(self):
         def action():

@@ -8,9 +8,11 @@ import unittest
 from unittest.mock import patch
 
 from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor
 import database as db
 from ui.main_window import MainWindow
-from ui.workflows import CatalogPage, ReadersPage, ReturnPage
+from ui.workflows import CatalogPage, ReaderCardDialog, ReadersPage, ReturnPage
 
 
 class UiTest(unittest.TestCase):
@@ -76,6 +78,39 @@ class UiTest(unittest.TestCase):
         self.assertEqual(len(db.get_readers()), 4)
         self.assertIn('Номер билета:', page.message.text())
         page.deleteLater()
+
+    def test_reader_card_opens_correct_ticket_after_sort_and_filter(self):
+        page = ReadersPage()
+        self.assertFalse(page.card_button.isEnabled())
+        page.table.sortItems(0, Qt.SortOrder.DescendingOrder)
+        page.table.selectRow(0)
+        self.assertTrue(page.card_button.isEnabled())
+        with patch('ui.workflows.ReaderCardDialog') as dialog:
+            page.card_button.click()
+            self.assertEqual(dialog.call_args.args[0]['reader']['id'], 3)
+            dialog.return_value.exec.assert_called_once()
+            page.search.setText('Смирнов')
+            page.table.selectRow(0)
+            page.table.cellDoubleClicked.emit(0, 0)
+            self.assertEqual(dialog.call_args.args[0]['reader']['id'], 1)
+        page.search.setText('несуществующий читатель')
+        self.assertFalse(page.card_button.isEnabled())
+        page.deleteLater()
+
+    def test_reader_card_shows_active_overdue_but_not_historical_overdue(self):
+        card = ReaderCardDialog(db.get_reader_card(3))
+        self.assertEqual(card.summary.text(), 'Книг на руках: 1. Просрочено: 1.')
+        self.assertEqual(card.loans.rowCount(), 1)
+        self.assertEqual(card.history.rowCount(), 3)
+        self.assertEqual(card.loans.item(0, 0).foreground().color(), QColor('#a32424'))
+        db.return_book(9, 2)
+        refreshed = ReaderCardDialog(db.get_reader_card(3))
+        self.assertEqual(refreshed.summary.text(), 'Книг на руках: 0. Просрочено: 0.')
+        self.assertEqual(refreshed.history.rowCount(), 4)
+        for row in range(refreshed.history.rowCount()):
+            self.assertNotEqual(refreshed.history.item(row, 0).foreground().color(), QColor('#a32424'))
+        card.deleteLater()
+        refreshed.deleteLater()
 
 
 if __name__ == '__main__':

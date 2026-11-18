@@ -186,6 +186,36 @@ def get_readers():
         return conn.execute("SELECT * FROM readers ORDER BY full_name").fetchall()
 
 
+def get_reader_card(reader_id):
+    """Данные, текущие книги и полный журнал одного читателя из одного снимка БД."""
+    with connect() as conn:
+        conn.execute("BEGIN")
+        reader = conn.execute("SELECT * FROM readers WHERE id = ?", (reader_id,)).fetchone()
+        if reader is None:
+            raise ValueError("Читатель не найден.")
+        loans = conn.execute("""
+            SELECT c.id AS copy_id, b.title, c.due_date,
+                   CASE WHEN c.due_date < date('now', 'localtime')
+                        THEN CAST(julianday(date('now', 'localtime')) - julianday(c.due_date) AS INTEGER)
+                        ELSE 0 END AS days_late
+              FROM copies c
+              JOIN books b ON b.id = c.book_id
+             WHERE c.reader_id = ?
+             ORDER BY c.due_date, c.id
+        """, (reader_id,)).fetchall()
+        history = conn.execute("""
+            SELECT o.op_date, o.op_type, o.copy_id, b.title,
+                   s.full_name AS staff, o.due_date
+              FROM operations o
+              JOIN copies c ON c.id = o.copy_id
+              JOIN books b ON b.id = c.book_id
+              JOIN staff s ON s.id = o.staff_id
+             WHERE o.reader_id = ?
+             ORDER BY o.id DESC
+        """, (reader_id,)).fetchall()
+        return {"reader": reader, "loans": loans, "history": history}
+
+
 def add_reader(full_name, phone, address, birth_date):
     full_name, phone, address = full_name.strip(), phone.strip(), address.strip()
     if not all((full_name, phone, address)):

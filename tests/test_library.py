@@ -75,6 +75,40 @@ class LibraryTest(unittest.TestCase):
         ticket = db.add_reader(' Новый читатель ', '123', 'Адрес', '2000-01-01')
         self.assertEqual(next(r for r in db.get_readers() if r['id'] == ticket)['full_name'], 'Новый читатель')
 
+    def test_reader_card_separates_current_loans_and_history(self):
+        card = db.get_reader_card(3)
+        self.assertEqual(card['reader']['id'], 3)
+        self.assertEqual([r['copy_id'] for r in card['loans']], [9])
+        self.assertEqual(card['loans'][0]['days_late'], 2)
+        self.assertEqual([r['op_type'] for r in card['history']], ['возврат', 'выдача', 'выдача'])
+        self.assertEqual({r['copy_id'] for r in card['history']}, {3, 9})
+
+    def test_reader_card_tracks_return_and_next_borrower(self):
+        db.return_book(2, 2)
+        db.issue_book(2, 2, 2)
+        old_reader = db.get_reader_card(1)
+        new_reader = db.get_reader_card(2)
+        self.assertEqual(old_reader['loans'], [])
+        self.assertEqual([r['op_type'] for r in old_reader['history']], ['возврат', 'выдача'])
+        self.assertEqual({r['copy_id'] for r in new_reader['loans']}, {2, 5})
+        self.assertTrue(all(r['days_late'] == 0 for r in new_reader['loans']))
+        self.assertEqual([r['op_type'] for r in new_reader['history']], ['выдача', 'выдача'])
+
+    def test_reader_card_empty_missing_and_full_history(self):
+        ticket = db.add_reader('Без выдач', '123', 'Адрес', '2000-01-01')
+        card = db.get_reader_card(ticket)
+        self.assertEqual(card['loans'], [])
+        self.assertEqual(card['history'], [])
+        for reader_id in (999, "1 OR 1=1"):
+            with self.assertRaisesRegex(ValueError, 'Читатель не найден'):
+                db.get_reader_card(reader_id)
+        with db.connect() as conn:
+            conn.executemany(
+                "INSERT INTO operations (op_type, copy_id, reader_id, staff_id) VALUES ('возврат', 1, ?, 2)",
+                [(ticket,)] * 101,
+            )
+        self.assertEqual(len(db.get_reader_card(ticket)['history']), 101)
+
     def test_reports_csv_and_formula_escaping(self):
         for name, (load, columns) in REPORTS.items():
             rows = load()
