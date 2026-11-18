@@ -9,8 +9,9 @@ from unittest.mock import patch
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QPalette
 import database as db
+from main import apply_light_theme
 from ui.main_window import MainWindow
 from ui.workflows import CatalogPage, ReaderCardDialog, ReadersPage, ReturnPage
 
@@ -111,6 +112,59 @@ class UiTest(unittest.TestCase):
             self.assertNotEqual(refreshed.history.item(row, 0).foreground().color(), QColor('#a32424'))
         card.deleteLater()
         refreshed.deleteLater()
+
+    def test_light_theme_keeps_controls_readable_with_dark_system_palette(self):
+        original_palette = self.app.palette()
+        original_style = self.app.style().objectName()
+        original_sheet = self.app.styleSheet()
+
+        def restore_theme():
+            self.app.setStyleSheet('')
+            self.app.setStyle(original_style)
+            self.app.setPalette(original_palette)
+            self.app.setStyleSheet(original_sheet)
+
+        self.addCleanup(restore_theme)
+        self.app.setStyleSheet('')
+        dark = QPalette()
+        for role in (QPalette.ColorRole.Window, QPalette.ColorRole.Base,
+                     QPalette.ColorRole.AlternateBase, QPalette.ColorRole.Button):
+            dark.setColor(role, QColor('#171717'))
+        for role in (QPalette.ColorRole.Text, QPalette.ColorRole.WindowText,
+                     QPalette.ColorRole.ButtonText):
+            dark.setColor(role, QColor('#ffffff'))
+        self.app.setPalette(dark)
+        apply_light_theme(self.app)
+
+        def luminance(color):
+            def channel(value):
+                return value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+            return sum(weight * channel(value) for weight, value in
+                       zip((0.2126, 0.7152, 0.0722), (color.redF(), color.greenF(), color.blueF())))
+
+        window = MainWindow(self.user)
+        self.addCleanup(window.deleteLater)
+        window.open_named('Выдача')
+        page = window.pages.currentWidget()
+        readers = ReadersPage()
+        self.addCleanup(readers.deleteLater)
+        for widget in (page.table, page.table.horizontalHeader(), page.reader,
+                       page.reader.view(), page.days, readers.birth, window.statusBar()):
+            widget.ensurePolished()
+            palette = widget.palette()
+            for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
+                for background, foreground in (
+                    (QPalette.ColorRole.Base, QPalette.ColorRole.Text),
+                    (QPalette.ColorRole.AlternateBase, QPalette.ColorRole.Text),
+                    (QPalette.ColorRole.Window, QPalette.ColorRole.WindowText),
+                    (QPalette.ColorRole.Button, QPalette.ColorRole.ButtonText),
+                    (QPalette.ColorRole.Highlight, QPalette.ColorRole.HighlightedText),
+                ):
+                    a = luminance(palette.color(group, background))
+                    b = luminance(palette.color(group, foreground))
+                    with self.subTest(widget=type(widget).__name__, group=group.name, role=background.name):
+                        self.assertGreaterEqual((max(a, b) + 0.05) / (min(a, b) + 0.05), 4.5)
+                self.assertGreater(luminance(palette.color(group, QPalette.ColorRole.Base)), 0.8)
 
 
 if __name__ == '__main__':

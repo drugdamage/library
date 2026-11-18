@@ -21,6 +21,8 @@ python main.py
 
 Demo logins: `admin / 1234`, `lib / 1111`. The app creates `library.db` on first launch and keeps existing data on later launches.
 
+The app uses a fixed light theme, including when macOS uses Dark Mode.
+
 Open **Выдача → Читатели**, select a reader, then click **Карточка выбранного читателя** or double-click the row. The card shows contact details, current loans with overdue days, and the reader's full operation history.
 
 ## Tests
