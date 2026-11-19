@@ -15,6 +15,8 @@ STYLE = """
     QPushButton { padding: 6px 18px; border-radius: 4px; background: #2f6fb3; color: white; border: none; }
     QPushButton:hover { background: #255d99; }
     QPushButton:disabled { background: #dde1e6; color: #626d79; }
+    QPushButton#secondaryButton { background: white; color: #255d99; border: 1px solid #c4c8cf; }
+    QPushButton#secondaryButton:hover { background: #e9eef4; }
     QLineEdit {
         padding: 5px; border: 1px solid #c4c8cf; border-radius: 4px;
         background: white; color: #222;

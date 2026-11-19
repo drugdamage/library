@@ -1,5 +1,6 @@
 import sqlite3
 import hashlib
+import re
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -10,7 +11,17 @@ LOAN_DAYS = 14  # на сколько дней выдаём книгу
 
 # lower() в sqlite не работает с русскими буквами, поэтому делаем свою функцию на python
 def py_lower(text):
-    return text.lower() if text else ""
+    return " ".join(str(text or "").casefold().replace("ё", "е").split())
+
+
+def phone_digits(text):
+    digits = "".join(c for c in str(text or "") if c.isdecimal())
+    return "7" + digits[1:] if len(digits) == 11 and digits.startswith("8") else digits
+
+
+def number_value(text):
+    text = text.lstrip("№# ").lstrip("0") or "0"
+    return int(text) if text.isdecimal() and len(text) <= 19 and int(text) < 2**63 else -1
 
 
 class LibraryConnection(sqlite3.Connection):
@@ -27,6 +38,7 @@ def connect():
     conn.row_factory = sqlite3.Row  # чтобы обращаться к столбцам по имени, например row["title"]
     conn.execute("PRAGMA foreign_keys = ON")  # без этого sqlite не проверяет связи между таблицами
     conn.create_function("py_lower", 1, py_lower)  # теперь py_lower можно писать прямо в запросе
+    conn.create_function("phone_digits", 1, phone_digits)
     return conn
 
 
@@ -159,9 +171,9 @@ def fill_test_data():
         )
 
     # выдаю через свои же функции, чтобы заодно заполнился журнал
-    # отрицательные дни это срок который уже прошёл, так появляются должники
-    issue_book(copy_id=2, reader_id=1, staff_id=2, days=-5)
-    issue_book(copy_id=9, reader_id=3, staff_id=2, days=-2)
+    # Исторические сроки задаются только для начальных тестовых данных.
+    _issue_book(2, 1, 2, (date.today() - timedelta(days=5)).isoformat())
+    _issue_book(9, 3, 2, (date.today() - timedelta(days=2)).isoformat())
     issue_book(copy_id=5, reader_id=2, staff_id=2)
     issue_book(copy_id=3, reader_id=3, staff_id=2)
     return_book(copy_id=3, staff_id=2)  # чтобы в журнале был и возврат
@@ -182,8 +194,40 @@ def get_genres():
 
 
 def get_readers():
+    return search_readers()
+
+
+def search_readers(text="", field="all"):
+    """ФИО — все введённые слова; билет — точный номер; телефон — цифры."""
+    if field not in ("all", "name", "ticket", "phone"):
+        raise ValueError("Неизвестный вид поиска читателей.")
+    query = py_lower(text)
+    conditions, params = [], []
+    if query:
+        ticket = query.lstrip("№# ")
+        if field == "ticket" or (field == "all" and ticket.isdecimal()):
+            conditions.append("r.id = ?")
+            params.append(number_value(ticket))
+        elif field == "phone":
+            digits = phone_digits(query)
+            if digits.startswith("8") and len(digits) >= 4:
+                conditions.append("(instr(phone_digits(r.phone), ?) > 0 OR instr(phone_digits(r.phone), ?) > 0)")
+                params.extend((digits, "7" + digits[1:]))
+            elif digits:
+                conditions.append("instr(phone_digits(r.phone), ?) > 0")
+                params.append(digits)
+            else:
+                conditions.append("0")
+        else:
+            for token in query.split():
+                conditions.append("instr(py_lower(r.full_name), ?) > 0")
+                params.append(token)
     with connect() as conn:
-        return conn.execute("SELECT * FROM readers ORDER BY full_name").fetchall()
+        return conn.execute(
+            "SELECT r.*, (SELECT count(*) FROM copies c WHERE c.reader_id = r.id) AS loan_count "
+            "FROM readers r WHERE " + (" AND ".join(conditions) or "1") +
+            " ORDER BY py_lower(r.full_name), r.id", params,
+        ).fetchall()
 
 
 def get_reader_card(reader_id):
@@ -217,16 +261,28 @@ def get_reader_card(reader_id):
 
 
 def add_reader(full_name, phone, address, birth_date):
-    full_name, phone, address = full_name.strip(), phone.strip(), address.strip()
+    full_name = " ".join(full_name.split())
+    phone, address = phone.strip(), " ".join(address.split())
     if not all((full_name, phone, address)):
         raise ValueError("Заполните ФИО, телефон и адрес.")
+    if not re.fullmatch(r"\+?[\d()\s-]+", phone) or not 7 <= len(phone_digits(phone)) <= 15:
+        raise ValueError("Телефон должен содержать от 7 до 15 цифр; допустимы +, пробелы, скобки и дефисы.")
     try:
         born = date.fromisoformat(birth_date)
     except (ValueError, TypeError):
         raise ValueError("Укажите дату рождения в формате ГГГГ-ММ-ДД.") from None
     if born > date.today():
         raise ValueError("Дата рождения не может быть в будущем.")
+    birth_date = born.isoformat()
     with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT id FROM readers WHERE py_lower(full_name) = ? AND birth_date = ? "
+            "AND phone_digits(phone) = ?",
+            (py_lower(full_name), birth_date, phone_digits(phone)),
+        ).fetchone()
+        if existing:
+            raise ValueError(f"Этот читатель уже зарегистрирован. Номер билета: {existing['id']}.")
         cur = conn.execute(
             "INSERT INTO readers (full_name, phone, address, birth_date) VALUES (?, ?, ?, ?)",
             (full_name.strip(), phone.strip(), address.strip(), birth_date),
@@ -243,7 +299,10 @@ SEARCH_SQL = """
                (SELECT group_concat(a.last_name || ' ' || substr(a.first_name, 1, 1) || '.', ', ')
                   FROM book_authors ba JOIN authors a ON a.id = ba.author_id
                  WHERE ba.book_id = b.id) AS authors,
-               g.name AS genre,
+               (SELECT group_concat(a.last_name || ' ' || coalesce(a.first_name, '') || ' ' || coalesce(a.middle_name, ''), ' ')
+                  FROM book_authors ba JOIN authors a ON a.id = ba.author_id
+                 WHERE ba.book_id = b.id) AS author_names,
+               g.name AS genre, g.id AS genre_id,
                b.year,
                c.reader_id IS NULL AS available,
                c.due_date
@@ -251,20 +310,41 @@ SEARCH_SQL = """
           JOIN books b ON b.id = c.book_id
           JOIN genres g ON g.id = b.genre_id
     )
-    WHERE py_lower(title || ' ' || coalesce(authors, '') || ' ' || genre) LIKE ?
-      AND (available = 1 OR ? = 0)
-    ORDER BY title, copy_id
 """
 
 
-def search_books(text="", only_available=False):
-    pattern = f"%{text.strip().lower()}%"
+def search_books(text="", only_available=False, genre_id=None):
+    query = py_lower(text)
+    conditions, params = ["(available = 1 OR ? = 0)"], [int(only_available)]
+    if genre_id is not None:
+        conditions.append("genre_id = ?")
+        params.append(genre_id)
+    if query.lstrip("№# ").isdecimal():
+        number = query.lstrip("№# ")
+        copy_id = number_value(number)
+        if query.startswith(("№", "#")):
+            conditions.append("copy_id = ?")
+            params.append(copy_id)
+        else:
+            conditions.append("(copy_id = ? OR instr(py_lower(title), ?) > 0)")
+            params.extend((copy_id, query))
+    else:
+        for token in query.split():
+            conditions.append("instr(py_lower(title || ' ' || coalesce(author_names, '') || ' ' || genre), ?) > 0")
+            params.append(token)
     with connect() as conn:
-        return conn.execute(SEARCH_SQL, (pattern, int(only_available))).fetchall()
+        return conn.execute(SEARCH_SQL + " WHERE " + " AND ".join(conditions) +
+                            " ORDER BY py_lower(title), copy_id", params).fetchall()
 
 
 def issue_book(copy_id, reader_id, staff_id, days=LOAN_DAYS):
+    if type(days) is not int or not 1 <= days <= 365:
+        raise ValueError("Срок выдачи должен быть от 1 до 365 дней.")
     due = (date.today() + timedelta(days=days)).isoformat()
+    return _issue_book(copy_id, reader_id, staff_id, due)
+
+
+def _issue_book(copy_id, reader_id, staff_id, due):
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         if not conn.execute("SELECT 1 FROM staff WHERE id = ?", (staff_id,)).fetchone():
@@ -286,7 +366,7 @@ def issue_book(copy_id, reader_id, staff_id, days=LOAN_DAYS):
     return due
 
 
-def return_book(copy_id, staff_id):
+def return_book(copy_id, staff_id, expected_loan_id=None):
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         if not conn.execute("SELECT 1 FROM staff WHERE id = ?", (staff_id,)).fetchone():
@@ -294,6 +374,12 @@ def return_book(copy_id, staff_id):
         row = conn.execute("SELECT reader_id FROM copies WHERE id = ?", (copy_id,)).fetchone()
         if row is None or row["reader_id"] is None:
             raise ValueError("Этот экземпляр не числится выданным.")
+        if expected_loan_id is not None:
+            loan = conn.execute(
+                "SELECT max(id) FROM operations WHERE copy_id = ? AND op_type = 'выдача'", (copy_id,)
+            ).fetchone()[0]
+            if loan != expected_loan_id:
+                raise ValueError("Выдача изменилась с момента выбора книги. Обновите список и выберите экземпляр заново.")
         # сначала пишем в журнал, пока ещё знаем у кого была книга
         conn.execute(
             "INSERT INTO operations (op_type, copy_id, reader_id, staff_id) VALUES ('возврат', ?, ?, ?)",
@@ -308,7 +394,8 @@ def get_issued():
     # join с readers оставляет только выданные экземпляры
     with connect() as conn:
         return conn.execute("""
-            SELECT c.id AS copy_id, b.title, r.id AS ticket, r.full_name, r.phone, c.due_date
+            SELECT c.id AS copy_id, b.title, r.id AS ticket, r.full_name, r.phone, c.due_date,
+                   (SELECT max(o.id) FROM operations o WHERE o.copy_id = c.id AND o.op_type = 'выдача') AS loan_id
               FROM copies c
               JOIN books b ON b.id = c.book_id
               JOIN readers r ON r.id = c.reader_id

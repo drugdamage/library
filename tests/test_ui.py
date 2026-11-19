@@ -1,4 +1,5 @@
 """Проверки сигналов форм без рабочего файла БД и без показа окон."""
+import csv
 from datetime import date, timedelta
 import os
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
@@ -7,13 +8,15 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QApplication, QDialog
+from PyQt6.QtCore import Qt, QDate, QPoint
 from PyQt6.QtGui import QColor, QPalette
+from PyQt6.QtTest import QTest
 import database as db
 from main import apply_light_theme
+from ui.common import Table, RAW_ROLE
 from ui.main_window import MainWindow
-from ui.workflows import CatalogPage, ReaderCardDialog, ReadersPage, ReturnPage
+from ui.workflows import CatalogPage, ReaderCardDialog, ReaderRegistrationDialog, ReadersPage, ReturnPage, ReportsPage, AdminPage
 
 
 class UiTest(unittest.TestCase):
@@ -30,6 +33,9 @@ class UiTest(unittest.TestCase):
         self.addCleanup(self.patch.stop)
         db.init_db()
         self.user = db.check_login('lib', '1111')
+        confirmation = patch('ui.common.Page.confirm', return_value=True)
+        self.confirm = confirmation.start()
+        self.addCleanup(confirmation.stop)
 
     def test_all_sections_and_role(self):
         window = MainWindow(db.check_login('admin', '1234'))
@@ -56,6 +62,7 @@ class UiTest(unittest.TestCase):
         page.table.selectRow(0)
         copy_id = page.table.selected_id()
         page.days.setValue(21)
+        page.set_reader(1)
         page.issue()
         self.assertEqual(db.get_stats()['issued'], 4)
         self.assertEqual(db.get_history(1)[0]['copy_id'], copy_id)
@@ -71,14 +78,24 @@ class UiTest(unittest.TestCase):
 
     def test_reader_form_validation_and_registration(self):
         page = ReadersPage()
-        page.register()
+        dialog = ReaderRegistrationDialog()
+        dialog.save()
         self.assertEqual(len(db.get_readers()), 3)
-        for field, value in zip(page.fields, ('Новый читатель', '12345', 'Адрес')):
+        for field, value in zip(dialog.fields, ('Новый читатель', '89001234567', 'Адрес')):
             field.setText(value)
-        page.register()
+        dialog.save()
+        self.assertIn('дату рождения', dialog.error.text())
+        dialog.birth.setDate(QDate(2000, 1, 1))
+        dialog.save()
         self.assertEqual(len(db.get_readers()), 4)
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+        page.search.setText('несуществующий')
+        with patch('ui.workflows.ReaderRegistrationDialog', return_value=dialog), patch.object(dialog, 'exec', return_value=QDialog.DialogCode.Accepted):
+            page.register()
+        self.assertEqual(page.table.selected_id(), dialog.ticket)
         self.assertIn('Номер билета:', page.message.text())
         page.deleteLater()
+        dialog.deleteLater()
 
     def test_reader_card_opens_correct_ticket_after_sort_and_filter(self):
         page = ReadersPage()
@@ -146,7 +163,7 @@ class UiTest(unittest.TestCase):
         self.addCleanup(window.deleteLater)
         window.open_named('Выдача')
         page = window.pages.currentWidget()
-        readers = ReadersPage()
+        readers = ReaderRegistrationDialog()
         self.addCleanup(readers.deleteLater)
         for widget in (page.table, page.table.horizontalHeader(), page.reader,
                        page.reader.view(), page.days, readers.birth, window.statusBar()):
@@ -165,6 +182,136 @@ class UiTest(unittest.TestCase):
                     with self.subTest(widget=type(widget).__name__, group=group.name, role=background.name):
                         self.assertGreaterEqual((max(a, b) + 0.05) / (min(a, b) + 0.05), 4.5)
                 self.assertGreater(luminance(palette.color(group, QPalette.ColorRole.Base)), 0.8)
+
+    def test_issue_requires_explicit_reader_and_keeps_it_during_book_search(self):
+        page = CatalogPage(self.user, issuing=True)
+        self.assertIsNone(page.reader.currentData())
+        page.table.selectRow(0)
+        self.assertFalse(page.issue_button.isEnabled())
+        page.set_reader(1)
+        self.assertTrue(page.issue_button.isEnabled())
+        page.search.setText('Пикник')
+        self.assertEqual(page.reader.currentData(), 1)
+        self.assertFalse(page.issue_button.isEnabled())
+        page.table.selectRow(0)
+        self.assertTrue(page.issue_button.isEnabled())
+        page.reader_search.setText('Кузнецова')
+        self.assertIsNone(page.reader.currentData())
+        self.assertFalse(page.issue_button.isEnabled())
+        page.reader.setCurrentIndex(1)
+        self.assertEqual(page.reader.currentData(), 2)
+        page.reader_search.clear()
+        self.assertEqual(page.reader.currentData(), 2)
+        page.table.clearSelection()
+        self.assertIsNone(page.table.selected_id())
+        self.assertFalse(page.issue_button.isEnabled())
+        page.deleteLater()
+
+    def test_cancelling_issue_and_return_keeps_database(self):
+        self.confirm.return_value = False
+        page = CatalogPage(self.user, issuing=True)
+        page.set_reader(1)
+        page.table.select_id(1)
+        before = len(db.get_history(-1))
+        page.issue()
+        details = self.confirm.call_args.args[1]
+        self.assertIn('Инвентарный №1', details)
+        self.assertIn('Смирнов', details)
+        returned = ReturnPage(self.user)
+        returned.table.select_id(2)
+        returned.accept_book()
+        self.assertEqual(len(db.get_history(-1)), before)
+        self.assertEqual(db.get_stats()['issued'], 3)
+        page.deleteLater()
+        returned.deleteLater()
+
+    def test_navigation_returns_to_context_and_passes_reader_to_issue(self):
+        window = MainWindow(self.user)
+        window.open_named('Выдача')
+        window.open_named('Читатели')
+        self.assertIn('Выдача', window.back.text())
+        window.go_back()
+        self.assertIsInstance(window.pages.currentWidget(), CatalogPage)
+        window.open_named('Читатели')
+        readers = window.pages.currentWidget()
+        readers.table.select_id(2)
+        readers.choose_button.click()
+        self.assertIsInstance(window.pages.currentWidget(), CatalogPage)
+        self.assertEqual(window.pages.currentWidget().reader.currentData(), 2)
+        window.go_back()
+        self.assertEqual(window.pages.currentIndex(), 0)
+        window.deleteLater()
+
+    def test_stale_return_refreshes_list_without_returning_new_loan(self):
+        page = ReturnPage(self.user)
+        page.table.select_id(2)
+        db.return_book(2, 2)
+        db.issue_book(2, 2, 2)
+        page.accept_book()
+        self.assertIn('Выдача изменилась', page.message.text())
+        self.assertFalse(page.accept_button.isEnabled())
+        self.assertEqual(next(r for r in db.get_issued() if r['copy_id'] == 2)['ticket'], 2)
+        page.deleteLater()
+
+    def test_report_export_preserves_sorted_raw_dates_and_history_is_not_overdue(self):
+        page = ReportsPage()
+        page.table.sortItems(5, Qt.SortOrder.DescendingOrder)
+        path = Path(self.temp.name) / 'sorted.csv'
+        expected = [page.table.item(row, 5).data(RAW_ROLE) for row in range(page.table.rowCount())]
+        with patch('ui.workflows.QFileDialog.getSaveFileName', return_value=(str(path), 'CSV (*.csv)')):
+            page.export()
+        with path.open(encoding='utf-8-sig', newline='') as stream:
+            rows = list(csv.reader(stream, delimiter=';'))
+        self.assertEqual([row[5] for row in rows[1:]], expected)
+        page.kind.setCurrentText('Журнал операций')
+        for row in range(page.table.rowCount()):
+            self.assertNotEqual(page.table.item(row, 0).foreground().color(), QColor('#a32424'))
+        page.deleteLater()
+
+    def test_date_sort_and_selection_reset(self):
+        table = Table()
+        table.populate([('id', 'Билет'), ('birth_date', 'Дата рождения')],
+                       [{'id': 1, 'birth_date': '2000-12-31'}, {'id': 10, 'birth_date': '2001-01-01'}], 'id')
+        table.sortItems(1, Qt.SortOrder.AscendingOrder)
+        self.assertEqual(table.item(0, 1).text(), '31.12.2000')
+        table.select_id(10)
+        self.assertEqual(table.selected_id(), 10)
+        table.populate([('id', 'Билет')], [{'id': 1}], 'id')
+        self.assertIsNone(table.selected_id())
+        table.deleteLater()
+
+    def test_birth_calendar_opens_near_current_year_without_prefilling_birth(self):
+        dialog = ReaderRegistrationDialog()
+        dialog.show()
+        self.app.processEvents()
+        QTest.mouseClick(dialog.birth, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                         QPoint(dialog.birth.width() - 8, dialog.birth.height() // 2))
+        self.app.processEvents()
+        self.assertEqual(dialog.birth.calendarWidget().yearShown(), QDate.currentDate().year() - 20)
+        self.assertEqual(dialog.birth.date(), dialog.birth.minimumDate())
+        dialog.birth.calendarWidget().window().hide()
+        dialog.hide()
+        dialog.deleteLater()
+
+    def test_admin_add_requires_fields_and_confirmation_then_resets_form(self):
+        page = AdminPage(db.check_login('admin', '1234'))
+        before = db.get_stats()
+        page.add()
+        self.assertEqual(db.get_stats(), before)
+        page.title.setText('Новый фонд')
+        page.authors.item(0).setSelected(True)
+        page.year.setValue(2020)
+        page.copies.setValue(2)
+        self.confirm.return_value = False
+        page.add()
+        self.assertEqual(db.get_stats(), before)
+        self.confirm.return_value = True
+        page.add()
+        self.assertEqual(db.get_stats()['copies'], before['copies'] + 2)
+        self.assertEqual(page.title.text(), '')
+        self.assertEqual(page.authors.selectedItems(), [])
+        self.assertEqual(page.year.value(), 0)
+        page.deleteLater()
 
 
 if __name__ == '__main__':

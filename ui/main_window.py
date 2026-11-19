@@ -82,6 +82,7 @@ class MainWindow(QMainWindow):
         self.home = HomePage(user)
         self.pages.addWidget(self.home)
         self.sections = {}
+        self.history = []
         # Четыре основные кнопки и их порядок повторяют фГлавная в Access.
         buttons = QVBoxLayout()
         for title in ("Администрирование", "Выдача", "Отчёты", "Отдача"):
@@ -93,7 +94,7 @@ class MainWindow(QMainWindow):
             buttons.addWidget(button, alignment=Qt.AlignmentFlag.AlignHCenter)
         self.home.layout().insertLayout(2, buttons)
         self.back = QPushButton("Закрыть — вернуться в главное меню")
-        self.back.clicked.connect(lambda: self.open_section(0))
+        self.back.clicked.connect(self.go_back)
         self.back.hide()
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -108,7 +109,7 @@ class MainWindow(QMainWindow):
         self.statusBar().addWidget(who)
         self.statusBar().addPermanentWidget(exit_button)
 
-    def open_named(self, name):
+    def open_named(self, name, remember=True):
         if name == "Администрирование" and self.user["role"] != "администратор":
             return
         if name not in self.sections:
@@ -123,6 +124,7 @@ class MainWindow(QMainWindow):
                 page = CatalogPage(self.user)
             elif name == "Читатели":
                 page = ReadersPage()
+                page.reader_selected.connect(self.use_reader)
             elif name == "Отчёты":
                 page = ReportsPage()
                 search = QPushButton("Поиск книг")
@@ -135,13 +137,35 @@ class MainWindow(QMainWindow):
         page = self.pages.widget(index)
         if hasattr(page, "refresh"):
             page.refresh()
-        self.open_section(index)
+        self.open_section(index, remember=remember)
 
-    def open_section(self, row):
+    def open_section(self, row, remember=True):
+        if remember:
+            if row == 0:
+                self.history.clear()
+            elif self.pages.currentIndex() != row:
+                self.history.append(self.pages.currentIndex())
         self.pages.setCurrentIndex(row)
-        self.back.setVisible(row != 0)
+        self.back.setVisible(bool(self.history))
+        previous = self.history[-1] if self.history else 0
+        title = next((name for name, index in self.sections.items() if index == previous), 'Главное меню')
+        self.back.setText(f'Назад — {title}')
         if row == 0:
             self.home.refresh()
+
+    def go_back(self):
+        if not self.history:
+            return
+        row = self.history.pop()
+        page = self.pages.widget(row)
+        if hasattr(page, 'refresh'):
+            page.refresh()
+        self.open_section(row, remember=False)
+
+    def use_reader(self, ticket):
+        self.history = [0]
+        self.open_named('Выдача', remember=False)
+        self.pages.currentWidget().set_reader(ticket)
 
     def do_logout(self):
         self.logging_out = True

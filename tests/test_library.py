@@ -72,7 +72,7 @@ class LibraryTest(unittest.TestCase):
         for args in (('', '1', 'address', '2000-01-01'), ('Name', '1', 'address', 'bad'), ('Name', '1', 'address', '2999-01-01')):
             with self.assertRaises(ValueError):
                 db.add_reader(*args)
-        ticket = db.add_reader(' Новый читатель ', '123', 'Адрес', '2000-01-01')
+        ticket = db.add_reader(' Новый читатель ', '89001234567', 'Адрес', '2000-01-01')
         self.assertEqual(next(r for r in db.get_readers() if r['id'] == ticket)['full_name'], 'Новый читатель')
 
     def test_reader_card_separates_current_loans_and_history(self):
@@ -95,7 +95,7 @@ class LibraryTest(unittest.TestCase):
         self.assertEqual([r['op_type'] for r in new_reader['history']], ['выдача', 'выдача'])
 
     def test_reader_card_empty_missing_and_full_history(self):
-        ticket = db.add_reader('Без выдач', '123', 'Адрес', '2000-01-01')
+        ticket = db.add_reader('Без выдач', '89001234567', 'Адрес', '2000-01-01')
         card = db.get_reader_card(ticket)
         self.assertEqual(card['loans'], [])
         self.assertEqual(card['history'], [])
@@ -156,6 +156,69 @@ class LibraryTest(unittest.TestCase):
             db.backup_database(target, 1)
         with self.assertRaises(ValueError):
             db.backup_database(db.DB_PATH, 1)
+
+    def test_reader_search_words_tickets_and_phone(self):
+        with db.connect() as conn:
+            conn.execute("INSERT INTO readers(id, full_name, phone, address, birth_date) VALUES (10, 'Фёдоров Пётр Сергеевич', '89001234567', 'Адрес', '1990-01-01')")
+            conn.execute("INSERT INTO readers(id, full_name, phone, address, birth_date) VALUES (11, 'Смирнов Пётр Иванович', '89007654321', 'Адрес', '1991-01-01')")
+        self.assertEqual([r['id'] for r in db.search_readers('1')], [1])
+        self.assertEqual([r['id'] for r in db.search_readers('№ 0010')], [10])
+        self.assertEqual([r['id'] for r in db.search_readers('  пЕТР   федоров ')], [10])
+        self.assertEqual([r['id'] for r in db.search_readers('+7 (900) 123-45-67', 'phone')], [10])
+        self.assertEqual([r['id'] for r in db.search_readers('8 (900) 123', 'phone')], [10])
+        self.assertEqual([r['id'] for r in db.search_readers('765-43', 'phone')], [11])
+        self.assertEqual(len(db.search_readers('Пётр', 'name')), 2)
+        for query in ('%', '_', "' OR 1=1 --", '9' * 200):
+            self.assertEqual(db.search_readers(query), [])
+        with self.assertRaises(ValueError):
+            db.search_readers('', 'unknown')
+
+    def test_book_search_words_inventory_and_literal_symbols(self):
+        self.assertEqual(len(db.search_books('  ПИКНИК аркадий ')), 2)
+        self.assertEqual(len(db.search_books('достоЕВСКИЙ федор')), 2)
+        self.assertEqual([r['copy_id'] for r in db.search_books('№ 10')], [10])
+        self.assertEqual(len(db.search_books('', genre_id=2)), 3)
+        for query in ('%', '_', '9' * 200):
+            self.assertEqual(db.search_books(query), [])
+        db.add_book('1984', 1, [1], 1949, 1, 1)
+        self.assertEqual(db.search_books('1984')[0]['title'], '1984')
+
+    def test_registration_normalizes_and_rejects_duplicate(self):
+        ticket = db.add_reader('  Фёдоров   Пётр ', '8 (900) 123-45-67', ' ул. Мира,  5 ', '1990-01-01')
+        reader = db.get_reader_card(ticket)['reader']
+        self.assertEqual(reader['full_name'], 'Фёдоров Пётр')
+        self.assertEqual(reader['address'], 'ул. Мира, 5')
+        with self.assertRaisesRegex(ValueError, f'Номер билета: {ticket}'):
+            db.add_reader('ФЕДОРОВ ПЕТР', '+7 900 1234567', 'Другой адрес', '1990-01-01')
+        self.assertEqual(len(db.get_readers()), 4)
+
+    def test_registration_phone_and_birth_validation(self):
+        before = len(db.get_readers())
+        for phone in ('123', 'телефон', '+7 abc 9001234567', '1' * 16):
+            with self.assertRaisesRegex(ValueError, 'Телефон'):
+                db.add_reader('Новый читатель', phone, 'Адрес', '1990-01-01')
+        for born in ('bad', '2999-01-01'):
+            with self.assertRaises(ValueError):
+                db.add_reader('Новый читатель', '89001234567', 'Адрес', born)
+        self.assertEqual(len(db.get_readers()), before)
+
+    def test_issue_rejects_invalid_days_without_changes(self):
+        before = len(db.get_history(-1))
+        for days in (0, -1, 366, True, 1.5, '14'):
+            with self.assertRaisesRegex(ValueError, 'Срок выдачи'):
+                db.issue_book(1, 1, 2, days)
+        self.assertEqual(len(db.get_history(-1)), before)
+        self.assertTrue(db.search_books('№1')[0]['available'])
+
+    def test_stale_return_does_not_close_new_loan(self):
+        previous_loan = next(r for r in db.get_issued() if r['copy_id'] == 2)['loan_id']
+        db.return_book(2, 2)
+        db.issue_book(2, 2, 2)
+        before = len(db.get_history(-1))
+        with self.assertRaisesRegex(ValueError, 'Выдача изменилась'):
+            db.return_book(2, 2, expected_loan_id=previous_loan)
+        self.assertEqual(len(db.get_history(-1)), before)
+        self.assertEqual(next(r for r in db.get_issued() if r['copy_id'] == 2)['ticket'], 2)
 
 
 if __name__ == '__main__':

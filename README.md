@@ -23,7 +23,15 @@ Demo logins: `admin / 1234`, `lib / 1111`. The app creates `library.db` on first
 
 The app uses a fixed light theme, including when macOS uses Dark Mode.
 
-Open **Выдача → Читатели**, select a reader, then click **Карточка выбранного читателя** or double-click the row. The card shows contact details, current loans with overdue days, and the reader's full operation history.
+Open **Выдача → Читатели**, select a reader, then click **Карточка читателя** or double-click the row. The card shows contact details, current loans with overdue days, and the reader's full operation history.
+
+## Daily operations
+
+- Reader search is shared by the reader list and the loan form. Names match all entered words in any order, ticket numbers match exactly, and phone search has a separate mode that ignores formatting.
+- Select a reader explicitly before issuing a book. Searching books keeps the selected reader; changing the reader search never silently selects another person.
+- Loans and returns show the reader, book, inventory number, and due date before confirmation. Cancelling leaves the database unchanged.
+- Reader registration opens in a separate form, requires an explicit birth date, validates the phone, and prevents duplicate records with the same name, birth date, and phone. The saved reader is selected for further work.
+- **Назад** returns to the previous section. **Обновить** / **F5** reloads current data. Dates are displayed as `dd.mm.yyyy`; sorted CSV exports keep their ISO dates.
 
 ## Tests
 
