@@ -33,6 +33,13 @@ Open **Выдача → Читатели**, select a reader, then click **Кар
 - Reader registration opens in a separate form, requires an explicit birth date, validates the phone, and prevents duplicate records with the same name, birth date, and phone. The saved reader is selected for further work.
 - **Назад** returns to the previous section. **Обновить** / **F5** reloads current data. Dates are displayed as `dd.mm.yyyy`; sorted CSV exports keep their ISO dates.
 
+## Reports
+
+- In **Отчёты → Формуляр книги**, choose an edition by title, author, or inventory number. Open **Экземпляры** for current status and **История операций** for loans and returns. Use **Все экземпляры** to switch to a specific copy.
+- In **Отчёты → Формуляр читателя**, choose a reader by name, ticket number, or phone. The report shows their current loans and personal history.
+- In **Должники**, enter `<4`, `4`, or `>4` for fewer than, exactly, or more than four overdue days. `<=4` and `>=4` include the boundary. Clear the field to show all overdue copies.
+- Use **Сортировка** or click a column header in any report. **Сохранить CSV…** exports the current result in the displayed order. Each formular section exports separately with its book or reader details.
+
 ## Tests
 
 ```sh

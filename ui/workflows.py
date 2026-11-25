@@ -5,12 +5,12 @@ import sqlite3
 from PyQt6.QtCore import QDate, QEvent, QTimer, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QDialog, QFileDialog,
-    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+    QFormLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QSpinBox, QTabWidget, QVBoxLayout,
 )
 import database as db
-from reports import REPORTS, export_csv
-from ui.common import Page, Table, ReaderSearch, RAW_ROLE, display_date
+from reports import ISSUED_LAYOUT
+from ui.common import Page, Table, ReaderSearch, display_date
 
 
 BOOK_COLUMNS = [('copy_id', 'Инв. №'), ('title', 'Название'), ('authors', 'Авторы'), ('genre', 'Жанр'), ('year', 'Год'), ('state', 'Состояние')]
@@ -174,7 +174,7 @@ class ReturnPage(Page):
                 match = all(token in combined for token in text.split())
             if match:
                 rows.append(row)
-        self.table.populate(REPORTS['Выданные книги'][1], rows, 'copy_id')
+        self.table.populate(ISSUED_LAYOUT.columns, rows, 'copy_id')
         self.count.setText(f'Выданных экземпляров: {len(rows)}' if rows else 'Выданные книги не найдены. Проверьте поиск и фильтры.')
 
     def accept_book(self):
@@ -367,50 +367,6 @@ class ReadersPage(Page):
             self.refresh()
             self.table.select_id(dialog.ticket)
             self.show_message(f'Читатель зарегистрирован. Номер билета: {dialog.ticket}. Можно открыть карточку или выбрать его для выдачи.')
-
-
-class ReportsPage(Page):
-    def __init__(self):
-        super().__init__('Отчёты')
-        self.kind = QComboBox()
-        self.kind.addItems(REPORTS)
-        self.layout.addWidget(self.kind)
-        self.table = Table()
-        self.layout.addWidget(self.table)
-        self.count = QLabel()
-        self.layout.addWidget(self.count)
-        self.export_button = QPushButton('Сохранить отчёт в CSV')
-        self.export_button.clicked.connect(self.export)
-        self.layout.addWidget(self.export_button)
-        self.kind.currentIndexChanged.connect(self.change_report)
-        self.change_report()
-
-    def change_report(self):
-        column, descending = {
-            'Выданные книги': (5, False), 'Книги в наличии': (1, False),
-            'Должники': (6, True), 'Журнал операций': (0, True),
-        }[self.kind.currentText()]
-        self.table.horizontalHeader().setSortIndicator(column, Qt.SortOrder.DescendingOrder if descending else Qt.SortOrder.AscendingOrder)
-        self.refresh()
-
-    def refresh(self):
-        load, self.columns = REPORTS[self.kind.currentText()]
-        self.rows = load()
-        self.table.populate(self.columns, self.rows, mark_overdue=self.kind.currentText() in ('Выданные книги', 'Должники'))
-        self.count.setText(f'Записей: {len(self.rows)}' if self.rows else 'В этом отчёте пока нет записей.')
-        self.export_button.setEnabled(bool(self.rows))
-
-    def export(self):
-        path, _ = QFileDialog.getSaveFileName(self, 'Сохранить отчёт', self.kind.currentText() + '.csv', 'CSV (*.csv)')
-        if path:
-            try:
-                # Сохраняем именно видимый порядок, включая сортировку пользователем.
-                rows = [{key: self.table.item(i, j).data(RAW_ROLE) for j, (key, _) in enumerate(self.columns)} for i in range(self.table.rowCount())]
-                export_csv(path, self.columns, rows)
-            except OSError:
-                QMessageBox.warning(self, 'Отчёт', 'Не удалось записать файл. Выберите доступную папку.')
-            else:
-                self.show_message('Отчёт сохранён: ' + path)
 
 
 class AdminPage(Page):

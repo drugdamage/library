@@ -14,9 +14,11 @@ from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtTest import QTest
 import database as db
 from main import apply_light_theme
+from reports import BOOK_FORMULAR, DEBTORS, READER_FORMULAR
 from ui.common import Table, RAW_ROLE
 from ui.main_window import MainWindow
-from ui.workflows import CatalogPage, ReaderCardDialog, ReaderRegistrationDialog, ReadersPage, ReturnPage, ReportsPage, AdminPage
+from ui.report_page import ReportSubjectDialog, ReportsPage
+from ui.workflows import CatalogPage, ReaderCardDialog, ReaderRegistrationDialog, ReadersPage, ReturnPage, AdminPage
 
 
 class UiTest(unittest.TestCase):
@@ -258,7 +260,7 @@ class UiTest(unittest.TestCase):
         page.table.sortItems(5, Qt.SortOrder.DescendingOrder)
         path = Path(self.temp.name) / 'sorted.csv'
         expected = [page.table.item(row, 5).data(RAW_ROLE) for row in range(page.table.rowCount())]
-        with patch('ui.workflows.QFileDialog.getSaveFileName', return_value=(str(path), 'CSV (*.csv)')):
+        with patch('ui.report_page.QFileDialog.getSaveFileName', return_value=(str(path), 'CSV (*.csv)')):
             page.export()
         with path.open(encoding='utf-8-sig', newline='') as stream:
             rows = list(csv.reader(stream, delimiter=';'))
@@ -267,6 +269,96 @@ class UiTest(unittest.TestCase):
         for row in range(page.table.rowCount()):
             self.assertNotEqual(page.table.item(row, 0).foreground().color(), QColor('#a32424'))
         page.deleteLater()
+
+    def test_report_filter_and_sort_control_exported_debtors(self):
+        due = (date.today() - timedelta(days=4)).isoformat()
+        with db.connect() as conn:
+            conn.execute('UPDATE copies SET due_date = ? WHERE id = 5', (due,))
+        page = ReportsPage()
+        self.addCleanup(page.deleteLater)
+        page.kind.setCurrentText(DEBTORS)
+        page.days_filter.setText('>=')
+        self.assertEqual(page.table.rowCount(), 0)
+        self.assertFalse(page.export_button.isEnabled())
+        self.assertIn('Введите целое число', page.message.text())
+
+        page.days_filter.setText('>=4')
+        page.sort_order.setCurrentIndex(0)
+        self.assertEqual([page.table.item(row, 6).data(RAW_ROLE) for row in range(2)], [4, 5])
+        page.kind.setCurrentText('Журнал операций')
+        self.assertEqual(page.table.rowCount(), 5)
+        page.kind.setCurrentText(DEBTORS)
+        page.refresh()
+        self.assertEqual(page.sort_field.currentData(), 'days_late')
+        self.assertEqual(page.sort_order.currentIndex(), 0)
+
+        path = Path(self.temp.name) / 'должники.csv'
+        with patch('ui.report_page.QFileDialog.getSaveFileName', return_value=(str(path), 'CSV')):
+            page.export()
+        with path.open(encoding='utf-8-sig', newline='') as stream:
+            rows = list(csv.DictReader(stream, delimiter=';'))
+        self.assertEqual([row['Просрочка, дней'] for row in rows], ['4', '5'])
+
+    def test_book_formular_choice_and_inventory_scope_apply_to_both_sections(self):
+        page = ReportsPage()
+        self.addCleanup(page.deleteLater)
+        page.kind.setCurrentText(BOOK_FORMULAR)
+        self.assertFalse(page.export_button.isEnabled())
+        dialog = ReportSubjectDialog(BOOK_FORMULAR, None, page)
+        self.assertFalse(dialog.choose_button.isEnabled())
+        dialog.search.setText('№2')
+        self.assertEqual(dialog.table.rowCount(), 1)
+        dialog.table.selectRow(0)
+        dialog.choose_button.click()
+        with patch('ui.report_page.ReportSubjectDialog', return_value=dialog), \
+                patch.object(dialog, 'exec', return_value=dialog.result()):
+            page.choose_subject_button.click()
+        self.assertEqual(page.table.rowCount(), 2)
+        page.sort_order.setCurrentIndex(1)
+        self.assertEqual([page.table.item(row, 0).data(RAW_ROLE) for row in range(2)], [2, 1])
+
+        db.issue_book(1, 3, 2)
+        page.refresh()
+        page.part.setCurrentIndex(1)
+        self.assertEqual(page.table.rowCount(), 2)
+        page.copy_scope.setCurrentIndex(page.copy_scope.findData(2))
+        self.assertEqual(page.table.rowCount(), 1)
+        self.assertEqual(page.table.item(0, 2).data(RAW_ROLE), 2)
+        self.assertNotEqual(page.table.item(0, 0).foreground().color(), QColor('#a32424'))
+        page.part.setCurrentIndex(0)
+        self.assertEqual(page.table.rowCount(), 1)
+        self.assertEqual(page.table.item(0, 0).data(RAW_ROLE), 2)
+
+    def test_reader_formular_refreshes_loans_and_exports_only_its_history(self):
+        page = ReportsPage()
+        self.addCleanup(page.deleteLater)
+        page.kind.setCurrentText(READER_FORMULAR)
+        dialog = ReportSubjectDialog(READER_FORMULAR, None, page)
+        dialog.search.input.setText('№3')
+        dialog.table.selectRow(0)
+        dialog.choose_button.click()
+        with patch('ui.report_page.ReportSubjectDialog', return_value=dialog), \
+                patch.object(dialog, 'exec', return_value=dialog.result()):
+            page.choose_subject_button.click()
+        self.assertEqual(page.table.rowCount(), 1)
+        db.return_book(9, 2)
+        db.issue_book(9, 1, 2)
+        page.refresh()
+        self.assertEqual(page.table.rowCount(), 0)
+        self.assertIn('нет книг на руках', page.count.text())
+
+        page.part.setCurrentIndex(1)
+        self.assertEqual(page.table.rowCount(), 4)
+        page.table.sortItems(2, Qt.SortOrder.DescendingOrder)
+        self.assertEqual(page.sort_field.currentData(), 'copy_id')
+        self.assertEqual(page.sort_order.currentIndex(), 1)
+        path = Path(self.temp.name) / 'формуляр читателя.csv'
+        with patch('ui.report_page.QFileDialog.getSaveFileName', return_value=(str(path), 'CSV')):
+            page.export()
+        with path.open(encoding='utf-8-sig', newline='') as stream:
+            rows = list(csv.DictReader(stream, delimiter=';'))
+        self.assertEqual({row['Билет'] for row in rows}, {'3'})
+        self.assertEqual([row['Инв. №'] for row in rows], ['9', '9', '3', '3'])
 
     def test_date_sort_and_selection_reset(self):
         table = Table()

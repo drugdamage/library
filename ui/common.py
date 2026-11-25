@@ -43,7 +43,7 @@ class Table(QTableWidget):
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.horizontalHeader().setSortIndicator(sort_column, Qt.SortOrder.DescendingOrder if descending else Qt.SortOrder.AscendingOrder)
 
-    def populate(self, columns, rows, id_key=None, mark_overdue=True):
+    def populate(self, columns, rows, id_key=None, mark_overdue=True, sort=None):
         self.blockSignals(True)
         self.setSortingEnabled(False)
         self.clear()
@@ -65,6 +65,8 @@ class Table(QTableWidget):
                 if overdue:
                     item.setForeground(QColor('#a32424'))
                 self.setItem(i, j, item)
+        if sort is not None:
+            self.horizontalHeader().setSortIndicator(*sort)
         self.setSortingEnabled(True)
         self.clearSelection()
         self.setCurrentCell(-1, -1)

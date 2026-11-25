@@ -5,7 +5,8 @@ from PyQt6.QtWidgets import (
 )
 
 from database import get_stats
-from ui.workflows import CatalogPage, ReturnPage, ReadersPage, ReportsPage, AdminPage
+from ui.report_page import ReportsPage
+from ui.workflows import CatalogPage, ReturnPage, ReadersPage, AdminPage
 
 # ключ из get_stats() и подпись под цифрой
 CARDS = [
@@ -128,8 +129,9 @@ class MainWindow(QMainWindow):
             elif name == "Отчёты":
                 page = ReportsPage()
                 search = QPushButton("Поиск книг")
+                search.setObjectName("secondaryButton")
                 search.clicked.connect(lambda: self.open_named("Поиск книг"))
-                page.layout.addWidget(search)
+                page.layout.addWidget(search, alignment=Qt.AlignmentFlag.AlignLeft)
             else:
                 page = AdminPage(self.user)
             self.sections[name] = self.pages.addWidget(page)

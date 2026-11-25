@@ -230,6 +230,19 @@ def search_readers(text="", field="all"):
         ).fetchall()
 
 
+HISTORY_SQL = """
+    SELECT o.op_date, o.op_type, o.copy_id, b.title, o.reader_id AS ticket,
+           r.full_name AS reader, s.full_name AS staff, o.due_date
+      FROM operations o
+      JOIN copies c ON c.id = o.copy_id
+      JOIN books b ON b.id = c.book_id
+      JOIN readers r ON r.id = o.reader_id
+      JOIN staff s ON s.id = o.staff_id
+"""
+
+LATE_DAYS_SQL = "CAST(julianday(date('now', 'localtime')) - julianday(c.due_date) AS INTEGER)"
+
+
 def get_reader_card(reader_id):
     """Данные, текущие книги и полный журнал одного читателя из одного снимка БД."""
     with connect() as conn:
@@ -237,26 +250,17 @@ def get_reader_card(reader_id):
         reader = conn.execute("SELECT * FROM readers WHERE id = ?", (reader_id,)).fetchone()
         if reader is None:
             raise ValueError("Читатель не найден.")
-        loans = conn.execute("""
+        loans = conn.execute(f"""
             SELECT c.id AS copy_id, b.title, c.due_date,
-                   CASE WHEN c.due_date < date('now', 'localtime')
-                        THEN CAST(julianday(date('now', 'localtime')) - julianday(c.due_date) AS INTEGER)
-                        ELSE 0 END AS days_late
+                   max(0, coalesce({LATE_DAYS_SQL}, 0)) AS days_late
               FROM copies c
               JOIN books b ON b.id = c.book_id
              WHERE c.reader_id = ?
              ORDER BY c.due_date, c.id
         """, (reader_id,)).fetchall()
-        history = conn.execute("""
-            SELECT o.op_date, o.op_type, o.copy_id, b.title,
-                   s.full_name AS staff, o.due_date
-              FROM operations o
-              JOIN copies c ON c.id = o.copy_id
-              JOIN books b ON b.id = c.book_id
-              JOIN staff s ON s.id = o.staff_id
-             WHERE o.reader_id = ?
-             ORDER BY o.id DESC
-        """, (reader_id,)).fetchall()
+        history = conn.execute(
+            HISTORY_SQL + " WHERE o.reader_id = ? ORDER BY o.id DESC", (reader_id,)
+        ).fetchall()
         return {"reader": reader, "loans": loans, "history": history}
 
 
@@ -290,51 +294,99 @@ def add_reader(full_name, phone, address, birth_date):
         return cur.lastrowid  # это номер билета нового читателя
 
 
-# ищем сразу по названию, авторам и жанру
-# внешний select нужен, чтобы в where можно было использовать authors и available
-SEARCH_SQL = """
-    SELECT * FROM (
-        SELECT c.id AS copy_id,
-               b.title,
-               (SELECT group_concat(a.last_name || ' ' || substr(a.first_name, 1, 1) || '.', ', ')
-                  FROM book_authors ba JOIN authors a ON a.id = ba.author_id
-                 WHERE ba.book_id = b.id) AS authors,
-               (SELECT group_concat(a.last_name || ' ' || coalesce(a.first_name, '') || ' ' || coalesce(a.middle_name, ''), ' ')
-                  FROM book_authors ba JOIN authors a ON a.id = ba.author_id
-                 WHERE ba.book_id = b.id) AS author_names,
-               g.name AS genre, g.id AS genre_id,
-               b.year,
-               c.reader_id IS NULL AS available,
-               c.due_date
-          FROM copies c
-          JOIN books b ON b.id = c.book_id
-          JOIN genres g ON g.id = b.genre_id
-    )
+BOOK_DETAILS_SQL = """
+    SELECT b.id AS book_id, b.title, b.genre_id, g.name AS genre, b.year,
+           (SELECT group_concat(
+                       trim(a.last_name || ' ' || coalesce(substr(a.first_name, 1, 1) || '.', '')),
+                       ', '
+                   )
+              FROM book_authors ba JOIN authors a ON a.id = ba.author_id
+             WHERE ba.book_id = b.id) AS authors,
+           (SELECT group_concat(
+                       a.last_name || ' ' || coalesce(a.first_name, '') || ' ' || coalesce(a.middle_name, ''),
+                       ' '
+                   )
+              FROM book_authors ba JOIN authors a ON a.id = ba.author_id
+             WHERE ba.book_id = b.id) AS author_names
+      FROM books b
+      JOIN genres g ON g.id = b.genre_id
 """
 
 
-def search_books(text="", only_available=False, genre_id=None):
+def _book_search_conditions(text, inventory_match):
     query = py_lower(text)
-    conditions, params = ["(available = 1 OR ? = 0)"], [int(only_available)]
+    if not query:
+        return [], []
+    number = query.lstrip("№# ")
+    if number.isdecimal():
+        inventory = number_value(number)
+        if query.startswith(("№", "#")):
+            return [inventory_match], [inventory]
+        return [f"({inventory_match} OR instr(py_lower(title), ?) > 0)"], [inventory, query]
+    tokens = query.split()
+    match_word = "instr(py_lower(title || ' ' || coalesce(author_names, '') || ' ' || genre), ?) > 0"
+    return [match_word] * len(tokens), tokens
+
+
+def search_books(text="", only_available=False, genre_id=None):
+    conditions, params = _book_search_conditions(text, "copy_id = ?")
+    if only_available:
+        conditions.append("available = 1")
     if genre_id is not None:
         conditions.append("genre_id = ?")
         params.append(genre_id)
-    if query.lstrip("№# ").isdecimal():
-        number = query.lstrip("№# ")
-        copy_id = number_value(number)
-        if query.startswith(("№", "#")):
-            conditions.append("copy_id = ?")
-            params.append(copy_id)
-        else:
-            conditions.append("(copy_id = ? OR instr(py_lower(title), ?) > 0)")
-            params.extend((copy_id, query))
-    else:
-        for token in query.split():
-            conditions.append("instr(py_lower(title || ' ' || coalesce(author_names, '') || ' ' || genre), ?) > 0")
-            params.append(token)
+    query = f"""
+        SELECT * FROM (
+            SELECT b.*, c.id AS copy_id, c.reader_id IS NULL AS available, c.due_date
+              FROM ({BOOK_DETAILS_SQL}) b
+              JOIN copies c ON c.book_id = b.book_id
+        )
+        WHERE {" AND ".join(conditions) or "1"}
+        ORDER BY py_lower(title), copy_id
+    """
     with connect() as conn:
-        return conn.execute(SEARCH_SQL + " WHERE " + " AND ".join(conditions) +
-                            " ORDER BY py_lower(title), copy_id", params).fetchall()
+        return conn.execute(query, params).fetchall()
+
+
+def search_editions(text=""):
+    """По одному результату на издание, включая книги без экземпляров."""
+    conditions, params = _book_search_conditions(
+        text, "EXISTS (SELECT 1 FROM copies c WHERE c.book_id = edition.book_id AND c.id = ?)"
+    )
+    query = f"""
+        SELECT edition.*,
+               (SELECT count(*) FROM copies c WHERE c.book_id = edition.book_id) AS copy_count
+          FROM ({BOOK_DETAILS_SQL}) edition
+         WHERE {" AND ".join(conditions) or "1"}
+         ORDER BY py_lower(title), year, book_id
+    """
+    with connect() as conn:
+        return conn.execute(query, params).fetchall()
+
+
+def get_book_formular(book_id):
+    """Издание, состояние экземпляров и история выдач из одного снимка базы."""
+    with connect() as conn:
+        conn.execute("BEGIN")
+        book = conn.execute(
+            BOOK_DETAILS_SQL + " WHERE b.id = ?", (book_id,)
+        ).fetchone()
+        if book is None:
+            raise ValueError("Книга не найдена. Выберите другое издание.")
+        copies = conn.execute(f"""
+            SELECT c.id AS copy_id, r.full_name AS reader, r.id AS ticket, c.due_date,
+                   CASE WHEN c.reader_id IS NULL THEN 'В наличии' ELSE 'На руках' END AS state,
+                   CASE WHEN c.reader_id IS NOT NULL
+                        THEN max(0, coalesce({LATE_DAYS_SQL}, 0)) END AS days_late
+              FROM copies c
+              LEFT JOIN readers r ON r.id = c.reader_id
+             WHERE c.book_id = ?
+             ORDER BY c.id
+        """, (book_id,)).fetchall()
+        history = conn.execute(
+            HISTORY_SQL + " WHERE c.book_id = ? ORDER BY o.id DESC", (book_id,)
+        ).fetchall()
+        return {"book": book, "copies": copies, "history": history}
 
 
 def issue_book(copy_id, reader_id, staff_id, days=LOAN_DAYS):
@@ -405,9 +457,9 @@ def get_issued():
 
 def get_debtors():
     with connect() as conn:
-        return conn.execute("""
+        return conn.execute(f"""
             SELECT r.id AS ticket, r.full_name, r.phone, c.id AS copy_id, b.title, c.due_date,
-                   CAST(julianday(date('now', 'localtime')) - julianday(c.due_date) AS INTEGER) AS days_late
+                   {LATE_DAYS_SQL} AS days_late
               FROM copies c
               JOIN books b ON b.id = c.book_id
               JOIN readers r ON r.id = c.reader_id
@@ -418,17 +470,7 @@ def get_debtors():
 
 def get_history(limit=100):
     with connect() as conn:
-        return conn.execute("""
-            SELECT o.op_date, o.op_type, o.copy_id, b.title,
-                   r.full_name AS reader, s.full_name AS staff, o.due_date
-              FROM operations o
-              JOIN copies c ON c.id = o.copy_id
-              JOIN books b ON b.id = c.book_id
-              JOIN readers r ON r.id = o.reader_id
-              JOIN staff s ON s.id = o.staff_id
-             ORDER BY o.id DESC
-             LIMIT ?
-        """, (limit,)).fetchall()
+        return conn.execute(HISTORY_SQL + " ORDER BY o.id DESC LIMIT ?", (limit,)).fetchall()
 
 
 def get_stats():

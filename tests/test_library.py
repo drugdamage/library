@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 import database as db
-from reports import REPORTS, export_csv
+from reports import REPORTS, export_csv, filter_debtors
 
 
 class LibraryTest(unittest.TestCase):
@@ -110,7 +110,8 @@ class LibraryTest(unittest.TestCase):
         self.assertEqual(len(db.get_reader_card(ticket)['history']), 101)
 
     def test_reports_csv_and_formula_escaping(self):
-        for name, (load, columns) in REPORTS.items():
+        for name, (load, layout) in REPORTS.items():
+            columns = layout.columns
             rows = load()
             path = Path(self.temp.name) / (name + '.csv')
             export_csv(path, columns, rows)
@@ -219,6 +220,44 @@ class LibraryTest(unittest.TestCase):
             db.return_book(2, 2, expected_loan_id=previous_loan)
         self.assertEqual(len(db.get_history(-1)), before)
         self.assertEqual(next(r for r in db.get_issued() if r['copy_id'] == 2)['ticket'], 2)
+
+    def test_book_formular_keeps_editions_and_copy_history_separate(self):
+        copy = db.search_books('№2')[0]
+        other_edition = db.add_book(copy['title'], 1, [1], 1990, 1, 1)
+        matching = db.search_editions('война толстой')
+        self.assertEqual({row['book_id'] for row in matching}, {copy['book_id'], other_edition})
+        self.assertEqual([row['book_id'] for row in db.search_editions('№2')], [copy['book_id']])
+
+        db.return_book(2, 2)
+        db.issue_book(1, 3, 2)
+        report = db.get_book_formular(copy['book_id'])
+        stock = {row['copy_id']: row for row in report['copies']}
+        self.assertEqual(set(stock), {1, 2})
+        self.assertEqual(stock[1]['ticket'], 3)
+        self.assertEqual(stock[1]['state'], 'На руках')
+        self.assertEqual(stock[2]['state'], 'В наличии')
+        self.assertIsNone(stock[2]['days_late'])
+        self.assertEqual(
+            [(row['copy_id'], row['ticket'], row['op_type']) for row in report['history']],
+            [(1, 3, 'выдача'), (2, 1, 'возврат'), (2, 1, 'выдача')],
+        )
+        self.assertEqual(db.get_book_formular(other_edition)['history'], [])
+
+    def test_overdue_filter_compares_integer_days_at_boundary(self):
+        today = date.today()
+        due = (today - timedelta(days=4)).isoformat()
+        with db.connect() as conn:
+            conn.execute('UPDATE copies SET due_date = ? WHERE id = 5', (due,))
+        rows = db.get_debtors()
+        for expression, expected in (
+            ('', [5, 4, 2]), ('<4 дней', [2]), ('4', [4]), ('= 4', [4]),
+            ('>4', [5]), ('<= 4', [4, 2]), ('≥4', [5, 4]), ('0', []),
+        ):
+            with self.subTest(expression=expression):
+                self.assertEqual([row['days_late'] for row in filter_debtors(rows, expression)], expected)
+        for invalid in ('<', '-4', '4,5', '4 OR 1=1', '>>4'):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                filter_debtors(rows, invalid)
 
 
 if __name__ == '__main__':
