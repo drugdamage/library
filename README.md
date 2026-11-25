@@ -2,6 +2,8 @@
 
 A desktop app for managing books, readers, loans, and reports, built with PyQt6 and SQLite.
 
+![Library book lending screen](docs/screenshot.png)
+
 ## Run
 
 Requires Python 3.10+.
