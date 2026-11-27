@@ -241,6 +241,14 @@ class LibraryTest(unittest.TestCase):
             [(row['copy_id'], row['ticket'], row['op_type']) for row in report['history']],
             [(1, 3, 'выдача'), (2, 1, 'возврат'), (2, 1, 'выдача')],
         )
+        scoped = db.get_book_formular(copy['book_id'], copy_id=2)
+        self.assertEqual(scoped['copy']['state'], 'В наличии')
+        self.assertEqual(
+            [(row['copy_id'], row['ticket'], row['op_type']) for row in scoped['history']],
+            [(2, 1, 'возврат'), (2, 1, 'выдача')],
+        )
+        with self.assertRaisesRegex(ValueError, 'Экземпляр №2 не найден'):
+            db.get_book_formular(other_edition, copy_id=2)
         self.assertEqual(db.get_book_formular(other_edition)['history'], [])
 
     def test_overdue_filter_compares_integer_days_at_boundary(self):

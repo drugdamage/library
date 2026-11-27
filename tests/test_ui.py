@@ -305,6 +305,7 @@ class UiTest(unittest.TestCase):
         page.kind.setCurrentText(BOOK_FORMULAR)
         self.assertFalse(page.export_button.isEnabled())
         dialog = ReportSubjectDialog(BOOK_FORMULAR, None, page)
+        dialog.book_mode.setCurrentIndex(1)
         self.assertFalse(dialog.choose_button.isEnabled())
         dialog.search.setText('№2')
         self.assertEqual(dialog.table.rowCount(), 1)
@@ -328,6 +329,55 @@ class UiTest(unittest.TestCase):
         page.part.setCurrentIndex(0)
         self.assertEqual(page.table.rowCount(), 1)
         self.assertEqual(page.table.item(0, 0).data(RAW_ROLE), 2)
+        page.copy_scope.setCurrentIndex(0)
+        page.table.cellDoubleClicked.emit(0, 0)
+        self.assertEqual(page.copy_scope.currentData(), 2)
+        self.assertEqual(page.part.currentIndex(), 1)
+        self.assertEqual(page.table.rowCount(), 1)
+
+    def test_select_copy_opens_history_and_exports_only_that_inventory_number(self):
+        db.add_book('2', 1, [1], 2005, 1, 1)
+        db.issue_book(1, 3, 2)
+        db.return_book(2, 2)
+        db.issue_book(2, 2, 2)
+
+        page = ReportsPage()
+        self.addCleanup(page.deleteLater)
+        page.kind.setCurrentText(BOOK_FORMULAR)
+        dialog = ReportSubjectDialog(BOOK_FORMULAR, None, page)
+        dialog.search.setText('война и мир')
+        self.assertEqual(dialog.table.rowCount(), 2)
+        self.assertFalse(dialog.choose_button.isEnabled())
+        dialog.search.setText('2')
+        self.assertEqual(dialog.table.rowCount(), 1)
+        self.assertEqual(dialog.table.selected_id(), 2)
+        dialog.search.setText('999')
+        self.assertFalse(dialog.choose_button.isEnabled())
+        self.assertIn('не найден', dialog.count.text())
+        dialog.search.setText('Инв. №002')
+        dialog.choose_button.click()
+        with patch('ui.report_page.ReportSubjectDialog', return_value=dialog), \
+                patch.object(dialog, 'exec', return_value=dialog.result()):
+            page.choose_subject_button.click()
+
+        self.assertEqual(page.part.currentIndex(), 1)
+        self.assertEqual(page.copy_scope.currentData(), 2)
+        self.assertIn('Инв. №2 · На руках', page.summary.text())
+        self.assertIn('билет №2', page.summary.text())
+        page.refresh()
+        self.assertEqual(page.table.rowCount(), 3)
+
+        path = Path(self.temp.name) / 'копия.csv'
+        with patch('ui.report_page.QFileDialog.getSaveFileName', return_value=(str(path), 'CSV')) as save:
+            page.export_button.click()
+        self.assertIn('Инв. №2', save.call_args.args[2])
+        with path.open(encoding='utf-8-sig', newline='') as stream:
+            rows = list(csv.DictReader(stream, delimiter=';'))
+        self.assertEqual({row['Инв. №'] for row in rows}, {'2'})
+        self.assertCountEqual(
+            [(row['Билет'], row['Операция']) for row in rows],
+            [('1', 'выдача'), ('1', 'возврат'), ('2', 'выдача')],
+        )
 
     def test_reader_formular_refreshes_loans_and_exports_only_its_history(self):
         page = ReportsPage()

@@ -364,8 +364,8 @@ def search_editions(text=""):
         return conn.execute(query, params).fetchall()
 
 
-def get_book_formular(book_id):
-    """Издание, состояние экземпляров и история выдач из одного снимка базы."""
+def get_book_formular(book_id, copy_id=None):
+    """Состояние издания и журнал с отбором по инвентарному номеру."""
     with connect() as conn:
         conn.execute("BEGIN")
         book = conn.execute(
@@ -383,10 +383,19 @@ def get_book_formular(book_id):
              WHERE c.book_id = ?
              ORDER BY c.id
         """, (book_id,)).fetchall()
+        selected_copy = None
+        history_query = HISTORY_SQL + " WHERE c.book_id = ?"
+        params = [book_id]
+        if copy_id is not None:
+            selected_copy = next((row for row in copies if row["copy_id"] == copy_id), None)
+            if selected_copy is None:
+                raise ValueError(f"Экземпляр №{copy_id} не найден в этом издании.")
+            history_query += " AND o.copy_id = ?"
+            params.append(copy_id)
         history = conn.execute(
-            HISTORY_SQL + " WHERE c.book_id = ? ORDER BY o.id DESC", (book_id,)
+            history_query + " ORDER BY o.id DESC", params
         ).fetchall()
-        return {"book": book, "copies": copies, "history": history}
+        return {"book": book, "copies": copies, "copy": selected_copy, "history": history}
 
 
 def issue_book(copy_id, reader_id, staff_id, days=LOAN_DAYS):

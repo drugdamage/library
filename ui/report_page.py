@@ -13,23 +13,30 @@ from reports import (
     BOOK_FORMULAR, DEBTORS, FORMULARS, READER_FORMULAR, REPORTS,
     export_csv, filter_debtors,
 )
-from ui.common import Page, RAW_ROLE, ReaderSearch, Table
+from ui.common import Page, RAW_ROLE, ReaderSearch, Table, display_date
 
 
 class ReportSubjectDialog(QDialog):
-    def __init__(self, report, selected_id, parent):
+    def __init__(self, report, selected_id, parent, *, selected_copy_id=None):
         super().__init__(parent)
         self.is_book = report == BOOK_FORMULAR
         self.subject_id = None
-        self.setWindowTitle('Выбор книги' if self.is_book else 'Выбор читателя')
+        self.copy_id = None
+        self.setWindowTitle('Выбор экземпляра или издания' if self.is_book else 'Выбор читателя')
         self.resize(780, 450)
 
         layout = QVBoxLayout(self)
         if self.is_book:
+            self.book_mode = QTabBar()
+            self.book_mode.setAccessibleName('Объект формуляра')
+            self.book_mode.setExpanding(False)
+            self.book_mode.addTab('Экземпляры')
+            self.book_mode.addTab('Издания целиком')
+            self.book_mode.currentChanged.connect(self.change_book_mode)
+            layout.addWidget(self.book_mode)
             self.search = QLineEdit()
             self.search.setClearButtonEnabled(True)
             self.search.setMaxLength(200)
-            self.search.setPlaceholderText('Название, автор или инвентарный номер')
             self.search.setAccessibleName('Поиск книги')
             self.search.textChanged.connect(self.refresh)
             search_widget = self.search
@@ -48,7 +55,7 @@ class ReportSubjectDialog(QDialog):
         cancel = QPushButton('Отмена')
         cancel.setObjectName('secondaryButton')
         cancel.clicked.connect(self.reject)
-        self.choose_button = QPushButton('Выбрать')
+        self.choose_button = QPushButton('Открыть формуляр' if self.is_book else 'Выбрать')
         self.choose_button.setDefault(True)
         self.choose_button.clicked.connect(self.choose)
         actions.addWidget(cancel)
@@ -57,46 +64,89 @@ class ReportSubjectDialog(QDialog):
         self.table.itemSelectionChanged.connect(self.update_choice)
         self.table.cellDoubleClicked.connect(self.choose)
 
-        self.refresh()
-        if selected_id is not None:
-            self.table.select_id(selected_id)
+        if self.is_book:
+            self.change_book_mode()
+            if selected_copy_id is not None:
+                self.table.select_id(selected_copy_id)
+        else:
+            self.refresh()
+            if selected_id is not None:
+                self.table.select_id(selected_id)
         search_widget.setFocus()
 
+    @property
+    def choosing_copy(self):
+        return self.is_book and self.book_mode.currentIndex() == 0
+
+    def change_book_mode(self):
+        self.search.setPlaceholderText(
+            'Инвентарный номер, название или автор' if self.choosing_copy
+            else 'Название, автор или инвентарный номер'
+        )
+        self.table.horizontalHeader().setSortIndicator(0, Qt.SortOrder.AscendingOrder)
+        self.refresh()
+
     def refresh(self):
-        if self.is_book:
+        exact_number = False
+        if self.choosing_copy:
+            columns = (('copy_id', 'Инв. №'), ('title', 'Название'), ('authors', 'Авторы'),
+                       ('year', 'Год'), ('state', 'Состояние'))
+            key, stretch_column = 'copy_id', 1
+            query = self.search.text().strip()
+            number = db.py_lower(query).removeprefix('инв.').lstrip('№# ')
+            exact_number = number.isdecimal()
+            if exact_number:
+                query = f'№{number}'
+        elif self.is_book:
             columns = (('title', 'Название'), ('authors', 'Авторы'), ('genre', 'Жанр'),
                        ('year', 'Год'), ('copy_count', 'Экземпляров'))
-            key = 'book_id'
+            key, stretch_column = 'book_id', 0
         else:
             columns = (('id', 'Билет'), ('full_name', 'ФИО'), ('phone', 'Телефон'),
                        ('birth_date', 'Дата рождения'), ('loan_count', 'На руках'))
-            key = 'id'
+            key, stretch_column = 'id', 1
         try:
-            rows = db.search_editions(self.search.text()) if self.is_book else self.search.rows()
+            if self.choosing_copy:
+                rows = [
+                    dict(row, state='В наличии' if row['available'] else 'На руках')
+                    for row in db.search_books(query)
+                ]
+            elif self.is_book:
+                rows = db.search_editions(self.search.text())
+            else:
+                rows = self.search.rows()
         except sqlite3.Error:
             rows = []
             message = 'Не удалось загрузить список. Повторите поиск.'
         else:
             message = f'Найдено: {len(rows)}' if rows else 'Ничего не найдено. Измените запрос.'
+            if exact_number and not rows:
+                message = 'Экземпляр с таким инвентарным номером не найден.'
         self.table.populate(columns, rows, key, mark_overdue=False)
-        self.table.horizontalHeader().setSectionResizeMode(
-            0 if self.is_book else 1, QHeaderView.ResizeMode.Stretch
-        )
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(stretch_column, QHeaderView.ResizeMode.Stretch)
         self.count.setText(message)
+        if exact_number and len(rows) == 1:
+            self.table.select_id(rows[0]['copy_id'])
 
     def update_choice(self):
         self.choose_button.setEnabled(self.table.selected_id() is not None)
 
     def choose(self):
-        self.subject_id = self.table.selected_id()
-        if self.subject_id is not None:
-            self.accept()
+        row = self.table.selected_record()
+        if row is None:
+            return
+        self.subject_id = row['book_id'] if self.is_book else row['id']
+        self.copy_id = row['copy_id'] if self.choosing_copy else None
+        self.accept()
 
 
 class ReportsPage(Page):
     def __init__(self):
         super().__init__('Отчёты')
         self.subjects = {BOOK_FORMULAR: None, READER_FORMULAR: None}
+        self.book_copy_id = None
         self.sorting = {}
         self.view_key = None
 
@@ -171,8 +221,9 @@ class ReportsPage(Page):
         self.kind.currentIndexChanged.connect(self.change_report)
         self.part.currentChanged.connect(self.render)
         self.days_filter.textChanged.connect(self.render)
-        self.copy_scope.currentIndexChanged.connect(self.render)
+        self.copy_scope.currentIndexChanged.connect(self.change_copy_scope)
         self.choose_subject_button.clicked.connect(self.choose_subject)
+        self.table.cellDoubleClicked.connect(self.open_copy_history)
         self.sort_field.currentIndexChanged.connect(self.apply_sort)
         self.sort_order.currentIndexChanged.connect(self.apply_sort)
         self.table.horizontalHeader().sortIndicatorChanged.connect(self.remember_sort)
@@ -185,20 +236,35 @@ class ReportsPage(Page):
         self.formular_tools.setVisible(report in FORMULARS)
         self.copy_scope.setVisible(report == BOOK_FORMULAR)
         if report in FORMULARS:
-            self.choose_subject_button.setText('Выбрать книгу…' if report == BOOK_FORMULAR else 'Выбрать читателя…')
+            caption = 'Выбрать экземпляр или издание…' if report == BOOK_FORMULAR else 'Выбрать читателя…'
+            self.choose_subject_button.setText(caption)
             with QSignalBlocker(self.part):
                 self.part.setTabText(0, FORMULARS[report][0][1])
-                self.part.setCurrentIndex(0)
+                self.part.setCurrentIndex(1 if report == BOOK_FORMULAR and self.book_copy_id is not None else 0)
         self.refresh()
 
     def choose_subject(self):
         report = self.kind.currentText()
-        dialog = ReportSubjectDialog(report, self.subjects[report], self)
+        dialog = ReportSubjectDialog(
+            report, self.subjects[report], self, selected_copy_id=self.book_copy_id
+        )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.subjects[report] = dialog.subject_id
-            with QSignalBlocker(self.copy_scope), QSignalBlocker(self.part):
-                self.copy_scope.setCurrentIndex(0)
-                self.part.setCurrentIndex(0)
+            if report == BOOK_FORMULAR:
+                self.book_copy_id = dialog.copy_id
+            with QSignalBlocker(self.part):
+                self.part.setCurrentIndex(1 if dialog.copy_id is not None else 0)
+            self.refresh()
+
+    def change_copy_scope(self):
+        self.book_copy_id = self.copy_scope.currentData()
+        self.refresh()
+
+    def open_copy_history(self, row, _column):
+        if self.view_key == (BOOK_FORMULAR, 'copies'):
+            self.book_copy_id = self.table.item(row, 0).data(RAW_ROLE)
+            with QSignalBlocker(self.part):
+                self.part.setCurrentIndex(1)
             self.refresh()
 
     def refresh(self):
@@ -210,8 +276,10 @@ class ReportsPage(Page):
             if report in FORMULARS:
                 subject_id = self.subjects[report]
                 if subject_id is not None:
-                    load = db.get_book_formular if report == BOOK_FORMULAR else db.get_reader_card
-                    self.formular = load(subject_id)
+                    if report == BOOK_FORMULAR:
+                        self.formular = db.get_book_formular(subject_id, self.book_copy_id)
+                    else:
+                        self.formular = db.get_reader_card(subject_id)
             else:
                 self.rows = REPORTS[report][0]()
         except ValueError as error:
@@ -220,14 +288,15 @@ class ReportsPage(Page):
             self.load_error = 'Не удалось загрузить отчёт. Попробуйте обновить его.'
 
         if report == BOOK_FORMULAR:
-            previous = self.copy_scope.currentData()
             with QSignalBlocker(self.copy_scope):
                 self.copy_scope.clear()
                 self.copy_scope.addItem('Все экземпляры', None)
                 if self.formular:
                     for copy in self.formular['copies']:
                         self.copy_scope.addItem(f"Инв. №{copy['copy_id']}", copy['copy_id'])
-                self.copy_scope.setCurrentIndex(max(0, self.copy_scope.findData(previous)))
+                elif self.book_copy_id is not None:
+                    self.copy_scope.addItem(f'Инв. №{self.book_copy_id}', self.book_copy_id)
+                self.copy_scope.setCurrentIndex(max(0, self.copy_scope.findData(self.book_copy_id)))
             self.copy_scope.setEnabled(self.copy_scope.count() > 1)
         self.render()
 
@@ -246,17 +315,23 @@ class ReportsPage(Page):
             return self.formular[part]
 
         book = self.formular['book']
-        inventory = self.copy_scope.currentData()
-        copies = [row for row in self.formular['copies'] if inventory is None or row['copy_id'] == inventory]
-        available = sum(row['ticket'] is None for row in copies)
-        details = ' · '.join(str(value) for value in (book['authors'], book['genre'], book['year']) if value)
-        self.summary.setText(
-            f"«{book['title']}» · {details}\n"
-            f"Экземпляров: {len(copies)} · В наличии: {available} · На руках: {len(copies) - available}"
-        )
-        if part == 'copies':
-            return copies
-        return [row for row in self.formular['history'] if inventory is None or row['copy_id'] == inventory]
+        details = [f"«{book['title']}»", book['authors'], book['genre'], book['year']]
+        edition = ' · '.join(str(value) for value in details if value)
+        copy = self.formular['copy']
+        copies = self.formular['copies']
+        if copy is not None:
+            status = f"Инв. №{copy['copy_id']} · {copy['state']}"
+            if copy['ticket'] is not None:
+                status += f" · {copy['reader']} (билет №{copy['ticket']})"
+                if copy['due_date']:
+                    status += f" · вернуть до {display_date(copy['due_date'])}"
+            rows = [copy] if part == 'copies' else self.formular['history']
+        else:
+            available = sum(row['state'] == 'В наличии' for row in copies)
+            status = f'Экземпляров: {len(copies)} · В наличии: {available} · На руках: {len(copies) - available}'
+            rows = self.formular[part]
+        self.summary.setText(f'{edition}\n{status}')
+        return rows
 
     def render(self):
         report = self.kind.currentText()
@@ -266,13 +341,15 @@ class ReportsPage(Page):
             part, _, layout = FORMULARS[report][self.part.currentIndex()]
             rows = self.formular_rows(report, part)
             if self.formular is None:
-                count_tag = 'Выберите книгу для отчёта.' if report == BOOK_FORMULAR else 'Выберите читателя для отчёта.'
+                count_tag = 'Выберите экземпляр или издание.' if report == BOOK_FORMULAR else 'Выберите читателя для отчёта.'
             elif not rows:
                 count_tag = {
                     'copies': 'У этой книги пока нет экземпляров.',
                     'loans': 'У читателя сейчас нет книг на руках.',
                     'history': 'Выдач и возвратов пока нет.',
                 }[part]
+                if part == 'history' and report == BOOK_FORMULAR and self.book_copy_id is not None:
+                    count_tag = f'У экземпляра №{self.book_copy_id} пока нет выдач и возвратов.'
         else:
             part = None
             layout, rows = REPORTS[report][1], self.rows
@@ -316,6 +393,10 @@ class ReportsPage(Page):
         stretch_key = next((key for key in ('title', 'reader', 'full_name') if key in keys), None)
         if stretch_key is not None:
             header.setSectionResizeMode(keys.index(stretch_key), QHeaderView.ResizeMode.Stretch)
+        row_mode = QHeaderView.ResizeMode.Interactive
+        if self.view_key == (BOOK_FORMULAR, 'history'):
+            row_mode = QHeaderView.ResizeMode.ResizeToContents
+        self.table.verticalHeader().setSectionResizeMode(row_mode)
 
     def apply_sort(self):
         column = self.sort_field.currentIndex()
